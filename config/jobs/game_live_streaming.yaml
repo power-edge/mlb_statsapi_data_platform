@@ -1,0 +1,121 @@
+# Game Live Streaming Job
+# Polls live game data every 30 seconds during active games
+
+name: game_live_streaming
+description: "Stream live MLB game data with 30-second polling"
+type: streaming
+trigger: event  # Triggered by schedule_polling when games go live
+
+# Source: MLB Stats API endpoint
+source:
+  endpoint: game          # pymlb_statsapi.Game
+  method: liveGameV1      # Game.liveGameV1()
+  parameters:
+    game_pk: ${GAME_PK}   # Passed from trigger
+    # timecode: null      # Omit for latest data
+
+# Streaming configuration
+streaming:
+  poll_interval: 30       # seconds
+  max_duration: 14400     # 4 hours max (safety limit)
+  stop_conditions:
+    - game_status: "Final"
+    - game_status: "Postponed"
+    - game_status: "Cancelled"
+    - no_updates_for: 3600  # Stop if no updates for 1 hour
+
+# Ingestion configuration
+ingestion:
+  rate_limit: 120         # Higher rate limit for live data
+  retry:
+    max_attempts: 5       # More retries for live data
+    backoff: exponential
+  timeout: 45
+
+# Storage configuration
+storage:
+  # Raw data - save every poll result
+  raw:
+    backend: postgres
+    table: game.live_game_v1
+    partition_by: game_date
+    upsert_keys: [game_pk, timecode]
+
+  # Cache latest game state
+  cache:
+    backend: redis
+    key_pattern: "game:live:{game_pk}"
+    ttl: 60  # 1 minute
+    also_cache:
+      - key: "game:live:{game_pk}:plays"
+        jsonpath: "$.liveData.plays.allPlays"
+      - key: "game:live:{game_pk}:linescore"
+        jsonpath: "$.liveData.linescore"
+
+  # Archive timestamped snapshots to S3
+  archive:
+    backend: s3
+    bucket: raw-data
+    path: "game/live/date=${game_date}/game_pk=${game_pk}/timecode=${timecode}"
+    format: avro
+    compression: snappy
+    save_frequency: every_poll  # Save every update
+
+# Transform configuration (streaming)
+transform:
+  enabled: true
+  mode: streaming
+  spark_job: game_live
+  output_tables:
+    - game.live_game_metadata     # Top-level game info
+    - game.live_game_plays        # All plays (incremental)
+    - game.live_game_pitch_events # All pitches (incremental)
+    - game.live_game_players      # All players (upsert)
+    - game.live_game_linescore    # Current score (upsert)
+  merge_mode: incremental  # Only process new plays/pitches
+  watermark: captured_at   # Use captured_at for watermarking
+
+# Post-completion actions
+post_completion:
+  - action: archive_final_state
+    destination: s3://archived-data/games/season=${season}/game_pk=${game_pk}
+
+  - action: refresh_materialized_view
+    views:
+      - game.latest_live
+      - game.today_summary
+
+  - action: trigger_workflow
+    workflow: game_analytics
+    parameters:
+      game_pk: ${game_pk}
+
+# Dependencies
+dependencies:
+  - job: schedule_polling
+    condition: game_active
+
+# Alerts
+alerts:
+  - condition: "no_updates_for > 300"  # 5 minutes without updates
+    severity: warning
+    message: "Game ${game_pk} hasn't updated in 5 minutes"
+
+  - condition: "api_errors > 3"
+    severity: error
+    message: "Multiple API errors for game ${game_pk}"
+
+  - condition: "game_status == 'Final'"
+    severity: info
+    message: "Game ${game_pk} completed: ${away_team} ${away_score} @ ${home_team} ${home_score}"
+
+metadata:
+  owner: data-engineering
+  team: mlb-data-platform
+  priority: high
+  sla_seconds: 60  # Data must be < 1 minute old
+  tags:
+    - game
+    - live
+    - streaming
+    - real-time

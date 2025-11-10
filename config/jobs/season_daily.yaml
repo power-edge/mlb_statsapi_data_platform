@@ -1,0 +1,74 @@
+# Season Daily Job
+# Fetches current season data (runs daily at midnight UTC)
+
+name: season_daily
+description: "Fetch current MLB season data including dates, game types, and structure"
+type: batch
+schedule: "0 0 * * *"  # Daily at midnight UTC
+
+# Source: MLB Stats API endpoint
+source:
+  endpoint: season      # pymlb_statsapi.Season
+  method: seasons       # Season.seasons()
+  parameters:
+    sportId: 1          # MLB
+    # season: ${SEASON}  # Optional: specific season (defaults to current)
+
+# Ingestion configuration
+ingestion:
+  rate_limit: 30        # Max requests per minute
+  retry:
+    max_attempts: 3
+    backoff: exponential
+    initial_delay: 1    # seconds
+    max_delay: 60       # seconds
+  timeout: 30           # seconds
+
+# Storage configuration
+storage:
+  # Raw data layer (complete JSON response)
+  raw:
+    backend: postgres   # Also write to PostgreSQL raw table
+    table: season.seasons
+    partition_by: captured_at
+    format: jsonb
+
+  # Also save to S3/MinIO for archival
+  archive:
+    backend: s3
+    bucket: raw-data
+    path: "season/seasons/date=${date}"
+    format: avro
+    compression: snappy
+
+# Transform configuration (PySpark job)
+transform:
+  enabled: true
+  spark_job: season     # Runs src/mlb_data_platform/transform/batch/season.py
+  output_tables:
+    - season.seasons_normalized
+  spark_config:
+    driver_memory: "2g"
+    executor_memory: "2g"
+    executor_cores: 2
+
+# Dependencies (other jobs that must complete first)
+dependencies: []
+
+# Notifications
+notifications:
+  on_failure:
+    - type: log
+      level: error
+    # - type: slack
+    #   webhook_url: ${SLACK_WEBHOOK_URL}
+
+# Metadata
+metadata:
+  owner: data-engineering
+  team: mlb-data-platform
+  sla_hours: 24
+  tags:
+    - season
+    - daily
+    - batch

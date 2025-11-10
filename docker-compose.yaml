@@ -1,0 +1,133 @@
+version: '3.9'
+
+services:
+  # PostgreSQL - Data Mart
+  postgres:
+    image: postgres:15-alpine
+    container_name: mlb-postgres
+    environment:
+      POSTGRES_USER: mlb_admin
+      POSTGRES_PASSWORD: mlb_dev_password
+      POSTGRES_DB: mlb_games
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlb_admin -d mlb_games"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mlb-network
+
+  # Redis - Cache Layer
+  redis:
+    image: redis:7-alpine
+    container_name: mlb-redis
+    command: redis-server --requirepass mlb_dev_password --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mlb-network
+
+  # MinIO - S3-compatible Storage
+  minio:
+    image: minio/minio:latest
+    container_name: mlb-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: mlb_admin
+      MINIO_ROOT_PASSWORD: mlb_dev_password
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - mlb-network
+
+  # MinIO Client - Create buckets on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: mlb-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 mlb_admin mlb_dev_password;
+      mc mb --ignore-existing minio/raw-data;
+      mc mb --ignore-existing minio/processed-data;
+      mc mb --ignore-existing minio/archived-data;
+      mc policy set download minio/raw-data;
+      mc policy set download minio/processed-data;
+      mc policy set download minio/archived-data;
+      echo 'MinIO buckets created successfully';
+      "
+    networks:
+      - mlb-network
+
+  # PgAdmin - Database GUI (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mlb-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@mlb.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - mlb-network
+    profiles:
+      - tools
+
+  # RedisInsight - Redis GUI (optional)
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: mlb-redisinsight
+    ports:
+      - "8001:8001"
+    volumes:
+      - redisinsight_data:/db
+    depends_on:
+      - redis
+    networks:
+      - mlb-network
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+  redisinsight_data:
+    driver: local
+
+networks:
+  mlb-network:
+    driver: bridge

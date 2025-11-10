@@ -1,0 +1,80 @@
+# Schedule Polling Job
+# Fetches today's game schedule (runs every 15 minutes)
+
+name: schedule_polling
+description: "Poll MLB game schedule for today to detect new/updated games"
+type: scheduled
+schedule: "*/15 * * * *"  # Every 15 minutes
+
+# Source: MLB Stats API endpoint
+source:
+  endpoint: schedule      # pymlb_statsapi.Schedule
+  method: schedule        # Schedule.schedule()
+  parameters:
+    sportId: 1            # MLB
+    date: ${TODAY}        # Today's date (YYYY-MM-DD)
+    hydrate: "team,linescore"  # Include team and linescore data
+
+# Ingestion configuration
+ingestion:
+  rate_limit: 60
+  retry:
+    max_attempts: 3
+    backoff: exponential
+  timeout: 30
+
+# Storage configuration
+storage:
+  raw:
+    backend: postgres
+    table: schedule.schedule
+    partition_by: game_date
+    upsert_keys: [game_pk, schedule_date]  # Update if exists
+
+  cache:
+    backend: redis
+    key_pattern: "schedule:today:{date}"
+    ttl: 900  # 15 minutes (same as polling interval)
+
+  archive:
+    backend: s3
+    bucket: raw-data
+    path: "schedule/schedule/date=${date}"
+    format: avro
+    compression: snappy
+
+# Transform configuration
+transform:
+  enabled: true
+  spark_job: schedule
+  output_tables:
+    - schedule.games        # Flattened games list
+    - schedule.daily_summary
+  post_transform:
+    # After transform, detect active games and trigger live polling
+    - action: trigger_workflow
+      workflow: game_live_polling
+      condition: "games_with_status('Live') > 0"
+      parameters:
+        game_pks: "${active_game_pks}"
+
+# Dependencies
+dependencies:
+  - job: season_daily
+    condition: completed_today
+
+# Notifications
+notifications:
+  on_new_games:
+    - type: log
+      level: info
+      message: "New games detected: ${new_game_count}"
+
+metadata:
+  owner: data-engineering
+  team: mlb-data-platform
+  sla_minutes: 30
+  tags:
+    - schedule
+    - polling
+    - real-time
