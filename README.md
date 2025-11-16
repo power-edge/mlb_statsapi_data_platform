@@ -62,12 +62,11 @@ See [SCHEMA_MAPPING.md](./SCHEMA_MAPPING.md) for complete endpoint/method → ta
 
 - **Python 3.11+**
 - **uv** (modern Python package manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Docker** (for local development)
-- **Kubernetes cluster** (for deployment)
-  - Tested with K3s on Hetzner Cloud
-  - Works with any Kubernetes 1.25+
+- **K3d** (local Kubernetes): `brew install k3d` (macOS) or see [k3d.io](https://k3d.io)
+- **kubectl** (Kubernetes CLI): `brew install kubectl` (macOS)
+- **Docker Desktop** (for K3d)
 
-### Local Development Setup
+### Local Development Setup (K3d Cluster)
 
 ```bash
 # Clone repository
@@ -77,21 +76,51 @@ cd mlb_statsapi_data_platform
 # Install dependencies
 uv sync
 
-# Start local infrastructure (PostgreSQL, Redis, MinIO)
-docker compose up -d
+# Create local K3d cluster (mlb-data-platform-local)
+make cluster-create
+
+# Deploy infrastructure (PostgreSQL, Redis, MinIO)
+make cluster-deploy
 
 # Initialize database schemas
-./scripts/init_database.sh
+make db-init
 
-# Run ingestion job (with stubs for testing)
-uv run mlb-etl ingest --job config/jobs/season_daily.yaml --stub-mode replay
+# Check cluster status
+make cluster-status
 
-# Run PySpark transform
-uv run mlb-etl transform --job config/jobs/season_daily.yaml
+# OR: Do it all in one command
+make cluster-full
+
+# Test ingestion (with stubs)
+uv run mlb-etl ingest \
+  --job config/jobs/season_daily.yaml \
+  --stub-mode replay \
+  --save \
+  --db-host localhost \
+  --db-port 65254
 
 # Query data
-psql -h localhost -U mlb_admin -d mlb_games \
+kubectl exec -it -n mlb-data-platform deployment/postgres -- \
+  psql -U mlb_admin -d mlb_games \
   -c "SELECT * FROM schedule.schedule ORDER BY captured_at DESC LIMIT 5;"
+
+# Or connect directly
+make db-connect
+```
+
+**Access Services (MLB-specific 652XX ports):**
+- PostgreSQL: `localhost:65254` (user: `mlb_admin`, password: `mlb_admin_password`)
+- MinIO API: `http://localhost:65290` (user: `minioadmin`, password: `minioadmin`)
+- MinIO Console: `http://localhost:65291`
+- Redis: `localhost:65263`
+
+> **Note**: Ports use 652XX range (652 = MLB) to avoid conflicts with other local services
+
+**Cluster Management:**
+```bash
+make cluster-stop    # Stop cluster when not in use
+make cluster-start   # Start cluster again
+make cluster-delete  # Remove cluster entirely
 ```
 
 ### Kubernetes Deployment
@@ -161,6 +190,62 @@ mlb_statsapi_data_platform/
 ├── tests/                        # pytest + behave (BDD with stubs)
 └── docs/                         # Documentation
 ```
+
+## 💾 Database Usage
+
+### Context Manager API
+
+The platform provides a clean, Pythonic API for database operations with automatic resource management:
+
+```python
+from mlb_data_platform.database import get_session, DatabaseConfig
+from mlb_data_platform.models import LiveGameMetadata
+from sqlmodel import select
+
+# Basic usage (uses local development defaults)
+with get_session() as session:
+    game = LiveGameMetadata(
+        game_pk=747175,
+        game_date=date(2024, 10, 25),
+        home_team_name="Los Angeles Dodgers",
+        away_team_name="New York Yankees",
+    )
+    session.add(game)
+    # Automatically commits on exit
+
+# Query with type safety
+with get_session() as session:
+    games = session.exec(select(LiveGameMetadata)).all()
+    for game in games:
+        print(f"{game.away_team_name} @ {game.home_team_name}")
+
+# Configuration from environment variables
+config = DatabaseConfig.from_env()
+with get_session(config) as session:
+    games = session.exec(select(LiveGameMetadata)).all()
+
+# Custom configuration
+prod_config = DatabaseConfig(
+    host="prod-db.example.com",
+    port=5432,
+    database="mlb_games",
+    user="mlb_admin",
+    password="***",
+    pool_size=20,
+)
+with get_session(prod_config) as session:
+    games = session.exec(select(LiveGameMetadata)).all()
+```
+
+**Features:**
+- ✅ Automatic session cleanup
+- ✅ Automatic commits on success
+- ✅ Automatic rollback on errors
+- ✅ Connection pooling (engines cached per connection URL)
+- ✅ Type-safe queries with SQLModel
+- ✅ Environment-aware configuration
+
+See [docs/DATABASE_CONTEXT_MANAGERS.md](./docs/DATABASE_CONTEXT_MANAGERS.md) for complete documentation and examples.
 
 ## 🛠️ Development
 

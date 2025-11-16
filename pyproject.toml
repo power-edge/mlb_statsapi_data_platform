@@ -34,7 +34,10 @@ dependencies = [
     "pymlb-statsapi>=1.0.0",
     "pyspark>=3.5.0",
     "delta-spark>=3.0.0",
+    "pydeequ>=1.2.0",  # AWS data quality library for PySpark
     "psycopg[binary]>=3.1.0",
+    "psycopg-pool>=3.1.0",
+    "sqlmodel>=0.0.14",  # SQLAlchemy 2.0 + Pydantic for ORM
     "redis>=5.0.0",
     "minio>=7.2.0",
     "pyyaml>=6.0.1",
@@ -42,14 +45,14 @@ dependencies = [
     "rich>=13.7.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
-    "avro-python3>=1.11.0",
-    "fastavro>=1.9.0",
+    "fastavro>=1.9.0",  # Use fastavro instead of avro-python3
     "httpx>=0.26.0",
     "tenacity>=8.2.3",
     "python-json-logger>=2.0.7",
+    "beautifulsoup4>=4.12.0",  # HTML parsing for Seamheads scraper
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=7.4.3",
     "pytest-cov>=4.1.0",
@@ -142,6 +145,7 @@ warn_no_return = true
 [[tool.mypy.overrides]]
 module = [
     "pyspark.*",
+    "pydeequ.*",
     "minio.*",
     "avro.*",
     "fastavro.*",

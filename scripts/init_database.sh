@@ -26,23 +26,53 @@ ENVIRONMENT="${1:-local}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SQL_DIR="${PROJECT_ROOT}/sql/migrations"
+POSTGRES_VERSION="15"  # Match K3d cluster version
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}MLB Data Platform - Database Initialization${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 echo -e "Environment: ${GREEN}${ENVIRONMENT}${NC}"
+echo -e "PostgreSQL Client: ${GREEN}${POSTGRES_VERSION}-alpine (Docker)${NC}"
 echo ""
+
+# Helper function to run psql in Docker container
+psql_docker() {
+    docker run --rm -i \
+        -e PGHOST="${PGHOST}" \
+        -e PGPORT="${PGPORT}" \
+        -e PGUSER="${PGUSER}" \
+        -e PGPASSWORD="${PGPASSWORD}" \
+        -e PGDATABASE="${PGDATABASE}" \
+        --network host \
+        postgres:${POSTGRES_VERSION}-alpine \
+        psql "$@"
+}
+
+# Helper function to run psql with file input
+psql_docker_file() {
+    local file="$1"
+    docker run --rm -i \
+        -e PGHOST="${PGHOST}" \
+        -e PGPORT="${PGPORT}" \
+        -e PGUSER="${PGUSER}" \
+        -e PGPASSWORD="${PGPASSWORD}" \
+        -e PGDATABASE="${PGDATABASE}" \
+        --network host \
+        -v "${file}:${file}:ro" \
+        postgres:${POSTGRES_VERSION}-alpine \
+        psql -f "${file}"
+}
 
 # Set PostgreSQL connection based on environment
 case "${ENVIRONMENT}" in
     local)
         PGHOST="localhost"
-        PGPORT="5432"
+        PGPORT="65254"
         PGUSER="mlb_admin"
-        PGPASSWORD="mlb_dev_password"
+        PGPASSWORD="mlb_admin_password"
         PGDATABASE="mlb_games"
-        echo -e "Target: ${YELLOW}Local Docker Compose${NC}"
+        echo -e "Target: ${YELLOW}Local K3d Cluster (port 65254)${NC}"
         ;;
     dev)
         PGHOST="postgresql.mlb-data-platform.svc.cluster.local"
@@ -79,7 +109,7 @@ export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
 
 # Test connection
 echo -e "${BLUE}Testing database connection...${NC}"
-if ! psql -c "SELECT version();" > /dev/null 2>&1; then
+if ! psql_docker -c "SELECT version();" > /dev/null 2>&1; then
     echo -e "${RED}ERROR: Cannot connect to PostgreSQL${NC}"
     echo "Host: ${PGHOST}:${PGPORT}"
     echo "Database: ${PGDATABASE}"
@@ -91,7 +121,7 @@ echo ""
 
 # Check if schema already exists
 echo -e "${BLUE}Checking existing schema...${NC}"
-EXISTING_SCHEMAS=$(psql -t -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name IN ('metadata', 'season', 'schedule', 'game');")
+EXISTING_SCHEMAS=$(psql_docker -t -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name IN ('metadata', 'season', 'schedule', 'game');")
 
 if [ -n "${EXISTING_SCHEMAS}" ]; then
     echo -e "${YELLOW}WARNING: Found existing schemas:${NC}"
@@ -130,7 +160,7 @@ for migration in ${MIGRATIONS}; do
     filename=$(basename "${migration}")
     echo -e "Running: ${YELLOW}${filename}${NC}"
 
-    if psql -f "${migration}" > /dev/null 2>&1; then
+    if psql_docker_file "${migration}" > /dev/null 2>&1; then
         echo -e "${GREEN}  ✓ Success${NC}"
     else
         echo -e "${RED}  ✗ Failed${NC}"
@@ -149,8 +179,8 @@ echo ""
 echo -e "${BLUE}Verifying schema...${NC}"
 
 # Count tables
-TABLE_COUNT=$(psql -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema IN ('metadata', 'season', 'schedule', 'game') AND table_type = 'BASE TABLE';")
-VIEW_COUNT=$(psql -t -c "SELECT COUNT(*) FROM information_schema.views WHERE table_schema IN ('metadata', 'season', 'schedule', 'game');")
+TABLE_COUNT=$(psql_docker -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema IN ('metadata', 'season', 'schedule', 'game') AND table_type = 'BASE TABLE';")
+VIEW_COUNT=$(psql_docker -t -c "SELECT COUNT(*) FROM information_schema.views WHERE table_schema IN ('metadata', 'season', 'schedule', 'game');")
 
 echo -e "Tables created: ${GREEN}${TABLE_COUNT}${NC}"
 echo -e "Views created: ${GREEN}${VIEW_COUNT}${NC}"
@@ -158,12 +188,12 @@ echo -e "Views created: ${GREEN}${VIEW_COUNT}${NC}"
 # List schemas
 echo ""
 echo -e "${BLUE}Schemas:${NC}"
-psql -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name IN ('metadata', 'season', 'schedule', 'game') ORDER BY schema_name;"
+psql_docker -c "SELECT schema_name FROM information_schema.schemata WHERE schema_name IN ('metadata', 'season', 'schedule', 'game') ORDER BY schema_name;"
 
 # List tables
 echo ""
 echo -e "${BLUE}Tables:${NC}"
-psql -c "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema IN ('metadata', 'season', 'schedule', 'game') AND table_type = 'BASE TABLE' ORDER BY table_schema, table_name;"
+psql_docker -c "SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema IN ('metadata', 'season', 'schedule', 'game') AND table_type = 'BASE TABLE' ORDER BY table_schema, table_name;"
 
 # Summary
 echo ""

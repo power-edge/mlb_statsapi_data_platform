@@ -1,7 +1,7 @@
 """MLB Stats API client with stub mode support and schema integration."""
 
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from pymlb_statsapi import api
@@ -15,6 +15,7 @@ from tenacity import (
 )
 
 from ..schema.registry import get_registry
+from ..storage.postgres import PostgresStorageBackend
 from .config import BackoffStrategy, JobConfig, StubMode
 
 
@@ -298,3 +299,96 @@ class MLBStatsAPIClient:
                 for r in self.schema_metadata.relationships
             ],
         }
+
+    def save(
+        self,
+        result: dict[str, Any],
+        storage_backend: PostgresStorageBackend,
+        partition_date: Optional[date] = None,
+        upsert: bool = False,
+    ) -> int:
+        """Save ingestion result to PostgreSQL.
+
+        Args:
+            result: Result from fetch() call
+            storage_backend: PostgreSQL storage backend
+            partition_date: Date for partitioning (defaults to today)
+            upsert: If True, use UPSERT logic based on primary keys
+
+        Returns:
+            Inserted/upserted row ID
+
+        Raises:
+            ValueError: If schema metadata not found or table name not configured
+        """
+        if not self.schema_metadata:
+            raise ValueError(
+                f"No schema metadata found for {self.job_config.source.endpoint}."
+                f"{self.job_config.source.method}"
+            )
+
+        # Get table name from schema metadata
+        table_name = self.schema_metadata.schema_name
+        if not table_name:
+            raise ValueError("Schema metadata missing table name")
+
+        # Extract data and metadata
+        data = result["data"]
+        metadata = result["metadata"]
+
+        # Add schema version to metadata
+        metadata["schema_version"] = self.schema_metadata.version
+
+        # Save to PostgreSQL
+        if upsert and self.schema_metadata.primary_keys:
+            row_id = storage_backend.upsert_raw_data(
+                table_name=table_name,
+                data=data,
+                metadata=metadata,
+                schema_metadata=self.schema_metadata,
+                partition_date=partition_date,
+            )
+        else:
+            row_id = storage_backend.insert_raw_data(
+                table_name=table_name,
+                data=data,
+                metadata=metadata,
+                schema_metadata=self.schema_metadata,
+                partition_date=partition_date,
+            )
+
+        return row_id
+
+    def fetch_and_save(
+        self,
+        storage_backend: PostgresStorageBackend,
+        partition_date: Optional[date] = None,
+        upsert: bool = False,
+        **override_params,
+    ) -> dict[str, Any]:
+        """Fetch data from API and save to PostgreSQL in one operation.
+
+        Args:
+            storage_backend: PostgreSQL storage backend
+            partition_date: Date for partitioning (defaults to today)
+            upsert: If True, use UPSERT logic
+            **override_params: Parameters to override from job config
+
+        Returns:
+            Result dict with 'row_id' added
+        """
+        # Fetch data
+        result = self.fetch(**override_params)
+
+        # Save to database
+        row_id = self.save(
+            result=result,
+            storage_backend=storage_backend,
+            partition_date=partition_date,
+            upsert=upsert,
+        )
+
+        # Add row_id to result
+        result["row_id"] = row_id
+
+        return result

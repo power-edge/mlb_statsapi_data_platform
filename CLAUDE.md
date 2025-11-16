@@ -6,6 +6,10 @@ Guidance for Claude Code (claude.ai/code) when working with this repository.
 
 **MLB StatsAPI Data Platform** is a Kubernetes-native data platform for ingesting, transforming, and serving MLB Stats API data at scale.
 
+**Architecture**: Kappa Architecture (unified batch + streaming transformations)
+**Data Quality**: PyDeequ (AWS data quality library for PySpark)
+**Design Philosophy**: Schema-driven, config-first, defensive upserts, idempotent pipelines
+
 ### Key Characteristics
 - **Kubernetes-first**: Designed to run entirely in K8s (no AWS services except state/secrets)
 - **Schema-driven**: Leverages `pymlb_statsapi` for schema-aware API interactions
@@ -760,12 +764,23 @@ argo resubmit <workflow-name> -n mlb-data-platform
 
 ---
 
+## Key Documentation
+
+**Start here for understanding the architecture**:
+1. **KAPPA_ARCHITECTURE.md** - Why we use Kappa (unified batch+streaming) over Lambda
+2. **TRANSFORMATION_ARCHITECTURE.md** - Schema-driven transformation design
+3. **IMPLEMENTATION_STATUS.md** - Current status and implementation roadmap
+4. **SESSION_SUMMARY.md** - Latest work session summary
+5. **SCHEMA_MAPPING.md** - Complete endpoint → table mapping
+
 ## Resources
 
 - **pymlb_statsapi**: [GitHub](https://github.com/power-edge/pymlb_statsapi) | [Docs](https://pymlb-statsapi.readthedocs.io/)
 - **MLB Stats API**: [Docs](https://statsapi.mlb.com/docs/)
 - **Argo Workflows**: [Docs](https://argoproj.github.io/argo-workflows/)
 - **PySpark**: [Docs](https://spark.apache.org/docs/latest/api/python/)
+- **PyDeequ**: [GitHub](https://github.com/awslabs/python-deequ)
+- **Delta Lake**: [Docs](https://docs.delta.io/)
 - **PostgreSQL**: [Docs](https://www.postgresql.org/docs/15/)
 
 ---

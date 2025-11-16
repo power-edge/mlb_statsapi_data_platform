@@ -13,6 +13,7 @@ from rich.tree import Tree
 from .ingestion.client import MLBStatsAPIClient
 from .ingestion.config import StubMode, load_job_config
 from .schema.registry import get_registry
+from .storage.postgres import PostgresConfig, PostgresStorageBackend
 
 app = typer.Typer(
     name="mlb-etl",
@@ -30,10 +31,20 @@ def ingest(
     ),
     game_pks: str = typer.Option("", "--game-pks", help="Comma-separated game PKs (for parallel workflows)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be ingested without saving"),
+    save: bool = typer.Option(False, "--save", help="Save ingested data to PostgreSQL"),
+    db_host: str = typer.Option("localhost", "--db-host", help="PostgreSQL host"),
+    db_port: int = typer.Option(5432, "--db-port", help="PostgreSQL port"),
+    db_name: str = typer.Option("mlb_games", "--db-name", help="PostgreSQL database name"),
+    db_user: str = typer.Option("mlb_admin", "--db-user", help="PostgreSQL user"),
+    db_password: str = typer.Option("mlb_admin_password", "--db-password", help="PostgreSQL password"),
+    upsert: bool = typer.Option(False, "--upsert", help="Use UPSERT instead of INSERT (requires primary keys)"),
 ):
     """Run data ingestion job."""
     console.print(f"[bold green]Starting ingestion job:[/bold green] {job}")
     console.print(f"Stub mode: [cyan]{stub_mode.value}[/cyan]")
+
+    if save:
+        console.print(f"Save to PostgreSQL: [green]enabled[/green] ({db_host}:{db_port}/{db_name})")
 
     try:
         # Load job configuration
@@ -44,6 +55,19 @@ def ingest(
 
         # Create client
         client = MLBStatsAPIClient(job_config, stub_mode=stub_mode)
+
+        # Create storage backend if saving
+        storage_backend = None
+        if save and not dry_run:
+            pg_config = PostgresConfig(
+                host=db_host,
+                port=db_port,
+                database=db_name,
+                user=db_user,
+                password=db_password,
+            )
+            storage_backend = PostgresStorageBackend(pg_config)
+            console.print("[green]✓ Connected to PostgreSQL[/green]")
 
         # Display schema info
         schema_info = client.get_schema_info()
@@ -69,18 +93,43 @@ def ingest(
 
             for i, game_pk in enumerate(game_pk_list, 1):
                 console.print(f"\n[{i}/{len(game_pk_list)}] Game PK: {game_pk}")
-                result = client.fetch(game_pk=game_pk)
+
+                if storage_backend:
+                    result = client.fetch_and_save(
+                        storage_backend=storage_backend,
+                        upsert=upsert,
+                        game_pk=game_pk
+                    )
+                    console.print(f"[green]✓ Saved to database (row_id: {result['row_id']})[/green]")
+                else:
+                    result = client.fetch(game_pk=game_pk)
+
                 _display_ingestion_result(result, dry_run)
         else:
             # Single fetch
             console.print("\n[bold]Fetching data...[/bold]")
-            result = client.fetch()
+
+            if storage_backend:
+                result = client.fetch_and_save(
+                    storage_backend=storage_backend,
+                    upsert=upsert,
+                )
+                console.print(f"[green]✓ Saved to database (row_id: {result['row_id']})[/green]")
+            else:
+                result = client.fetch()
+
             _display_ingestion_result(result, dry_run)
+
+        # Close storage backend
+        if storage_backend:
+            storage_backend.close()
 
         if dry_run:
             console.print("\n[yellow]⚠ Dry run - data not saved[/yellow]")
+        elif save:
+            console.print("\n[green]✓ Ingestion and storage complete[/green]")
         else:
-            console.print("\n[green]✓ Ingestion complete[/green]")
+            console.print("\n[green]✓ Ingestion complete (not saved)[/green]")
 
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
@@ -305,6 +354,206 @@ def workflow(
 
     # TODO: Implement Argo Workflows integration
     console.print("[yellow]Workflow management not yet implemented[/yellow]")
+
+
+@app.command()
+def venue(
+    action: str = typer.Argument(..., help="Action: fetch-park-factors, fetch-seamheads, list-venues, list-park-factors, refresh-views"),
+    season: int = typer.Option(2024, "--season", "-s", help="Season year"),
+    venue_id: int = typer.Option(None, "--venue-id", help="Filter by venue ID"),
+    park_id: str = typer.Option(None, "--park-id", help="Seamheads park ID (e.g., BOS07)"),
+    stat_type: str = typer.Option(None, "--stat-type", help="Filter by stat type (HR, 2B, etc.)"),
+    rolling: int = typer.Option(1, "--rolling", help="Rolling average (1=single season, 3=three-year)"),
+    active_only: bool = typer.Option(True, "--active-only/--all", help="Fetch only active ballparks"),
+    db_host: str = typer.Option("localhost", "--db-host", help="PostgreSQL host"),
+    db_port: int = typer.Option(65254, "--db-port", help="PostgreSQL port"),
+    db_name: str = typer.Option("mlb_games", "--db-name", help="PostgreSQL database name"),
+    db_user: str = typer.Option("mlb_admin", "--db-user", help="PostgreSQL user"),
+    db_password: str = typer.Option("mlb_admin_password", "--db-password", help="PostgreSQL password"),
+):
+    """Venue enrichment operations."""
+    from .venue import BaseballSavantScraper, SeamheadsScraper, VenueStorageBackend
+
+    console.print(f"[bold green]Venue action:[/bold green] {action}")
+
+    # Setup PostgreSQL connection
+    pg_config = PostgresConfig(
+        host=db_host,
+        port=db_port,
+        database=db_name,
+        user=db_user,
+        password=db_password,
+    )
+    postgres = PostgresStorageBackend(pg_config)
+    venue_storage = VenueStorageBackend(postgres)
+
+    if action == "fetch-park-factors":
+        console.print(f"Fetching park factors for season [cyan]{season}[/cyan] (rolling={rolling})")
+
+        try:
+            with BaseballSavantScraper() as scraper:
+                park_factors = scraper.fetch_park_factors(season=season, rolling=rolling)
+
+                console.print(f"[green]✓[/green] Scraped {len(park_factors)} park factors")
+
+                # Save to database
+                count = venue_storage.upsert_park_factors(park_factors)
+                console.print(f"[green]✓[/green] Saved {count} park factors to database")
+
+                # Refresh materialized views
+                console.print("Refreshing materialized views...")
+                venue_storage.refresh_materialized_views()
+                console.print("[green]✓[/green] Materialized views refreshed")
+
+                # Show sample
+                table = Table(title=f"Park Factors - Season {season}")
+                table.add_column("Venue", style="cyan")
+                table.add_column("Stat", style="magenta")
+                table.add_column("Factor", justify="right", style="yellow")
+                table.add_column("Sample", justify="right")
+
+                for factor in park_factors[:10]:  # Show first 10
+                    table.add_row(
+                        factor.venue_name,
+                        factor.stat_type,
+                        f"{factor.park_factor:.1f}",
+                        str(factor.sample_size or "N/A"),
+                    )
+
+                if len(park_factors) > 10:
+                    console.print(f"Showing 10 of {len(park_factors)} park factors")
+
+                console.print(table)
+
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    elif action == "list-venues":
+        console.print("Retrieving venues from database...")
+
+        venues = venue_storage.get_venues(active_only=True)
+
+        table = Table(title="MLB Venues")
+        table.add_column("ID", justify="right", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("City", style="magenta")
+        table.add_column("State", style="yellow")
+        table.add_column("Capacity", justify="right")
+        table.add_column("CF Distance", justify="right")
+
+        for venue in venues:
+            table.add_row(
+                str(venue["venue_id"]),
+                venue["name"],
+                venue["city"] or "N/A",
+                venue["state"] or "N/A",
+                str(venue["capacity"]) if venue["capacity"] else "N/A",
+                f"{venue['center_field']}'" if venue["center_field"] else "N/A",
+            )
+
+        console.print(table)
+        console.print(f"Total venues: {len(venues)}")
+
+    elif action == "list-park-factors":
+        console.print(
+            f"Retrieving park factors (venue_id={venue_id}, season={season}, stat_type={stat_type})..."
+        )
+
+        factors = venue_storage.get_park_factors(
+            venue_id=venue_id,
+            season=season,
+            stat_type=stat_type,
+        )
+
+        table = Table(title="Park Factors")
+        table.add_column("Venue", style="cyan")
+        table.add_column("Season", justify="right", style="yellow")
+        table.add_column("Stat", style="magenta")
+        table.add_column("Factor", justify="right", style="green")
+        table.add_column("Sample", justify="right")
+
+        for factor in factors:
+            table.add_row(
+                factor["venue_name"],
+                str(factor["season"]),
+                factor["stat_type"],
+                f"{factor['park_factor']:.1f}",
+                str(factor["sample_size"]) if factor["sample_size"] else "N/A",
+            )
+
+        console.print(table)
+        console.print(f"Total park factors: {len(factors)}")
+
+    elif action == "fetch-seamheads":
+        console.print("Fetching ballpark data from Seamheads.com...")
+
+        try:
+            with SeamheadsScraper() as scraper:
+                if park_id:
+                    # Fetch specific ballpark
+                    console.print(f"Fetching park_id: [cyan]{park_id}[/cyan]")
+                    venues = [scraper.fetch_ballpark_by_id(park_id)]
+                else:
+                    # Fetch all ballparks
+                    console.print(f"Fetching {'active' if active_only else 'all'} ballparks...")
+                    venues = scraper.fetch_all_ballparks(active_only=active_only)
+
+                console.print(f"[green]✓[/green] Scraped {len(venues)} ballpark(s)")
+
+                # Save to database
+                saved_count = 0
+                for venue in venues:
+                    try:
+                        venue_storage.upsert_venue(venue)
+                        saved_count += 1
+                    except Exception as e:
+                        console.print(f"[yellow]Warning:[/yellow] Failed to save {venue.name}: {e}")
+
+                console.print(f"[green]✓[/green] Saved {saved_count}/{len(venues)} venue(s) to database")
+
+                # Show sample
+                table = Table(title="Fetched Venues")
+                table.add_column("Name", style="cyan")
+                table.add_column("City", style="magenta")
+                table.add_column("State", style="yellow")
+                table.add_column("CF Distance", justify="right")
+                table.add_column("Capacity", justify="right")
+
+                for venue in venues[:10]:  # Show first 10
+                    cf_dist = (
+                        f"{venue.dimensions.center_field}'"
+                        if venue.dimensions and venue.dimensions.center_field
+                        else "N/A"
+                    )
+                    capacity = str(venue.capacity) if venue.capacity else "N/A"
+
+                    table.add_row(
+                        venue.name,
+                        venue.city or "N/A",
+                        venue.state or "N/A",
+                        cf_dist,
+                        capacity,
+                    )
+
+                if len(venues) > 10:
+                    console.print(f"Showing 10 of {len(venues)} venues")
+
+                console.print(table)
+
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+    elif action == "refresh-views":
+        console.print("Refreshing materialized views...")
+        venue_storage.refresh_materialized_views()
+        console.print("[green]✓[/green] Materialized views refreshed")
+
+    else:
+        console.print(f"[red]Unknown action:[/red] {action}")
+        console.print("Valid actions: fetch-park-factors, fetch-seamheads, list-venues, list-park-factors, refresh-views")
+        raise typer.Exit(code=1)
 
 
 @app.command()

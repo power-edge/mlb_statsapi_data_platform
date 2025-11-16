@@ -1,0 +1,1313 @@
+# Schema Mapping: Game.liveGameV1() → Normalized Tables
+# This file defines how the raw JSONB from game.live_game_v1 is transformed into 17 normalized relational tables
+
+version: "1.0"
+last_updated: "2024-11-15"
+
+source:
+  endpoint: game
+  method: live_game_v1
+  raw_table: game.live_game_v1
+  description: "Complete live game feed with all plays, pitches, players, and game state"
+
+# Target normalized tables (17 total)
+targets:
+  # ========================================
+  # 1. Game Metadata (Top-level)
+  # ========================================
+  - name: game.live_game_metadata
+    description: "Core game information: teams, venue, status, timing, weather"
+    partition_by: game_date
+    primary_key: [game_pk]
+    upsert_keys: [game_pk, source_captured_at]
+
+    fields:
+      # Primary identifier
+      - name: game_pk
+        type: BIGINT
+        json_path: $.gamePk
+        nullable: false
+        description: "Unique game identifier"
+
+      # Game classification
+      - name: game_type
+        type: VARCHAR(5)
+        json_path: $.gameData.game.type
+        description: "R=Regular, P=Playoff, W=World Series"
+
+      - name: season
+        type: VARCHAR(4)
+        json_path: $.gameData.game.season
+
+      - name: season_type
+        type: VARCHAR(20)
+        json_path: $.gameData.game.seasonDisplay
+
+      # Timing
+      - name: game_date
+        type: DATE
+        json_path: $.gameData.datetime.officialDate
+        nullable: false
+
+      - name: game_datetime
+        type: TIMESTAMPTZ
+        json_path: $.gameData.datetime.dateTime
+
+      - name: day_night
+        type: VARCHAR(10)
+        json_path: $.gameData.datetime.dayNight
+
+      - name: time_zone
+        type: VARCHAR(50)
+        json_path: $.gameData.datetime.time
+
+      # Venue
+      - name: venue_id
+        type: INT
+        json_path: $.gameData.venue.id
+
+      - name: venue_name
+        type: VARCHAR(100)
+        json_path: $.gameData.venue.name
+
+      # Teams
+      - name: home_team_id
+        type: INT
+        json_path: $.gameData.teams.home.id
+
+      - name: home_team_name
+        type: VARCHAR(100)
+        json_path: $.gameData.teams.home.name
+
+      - name: away_team_id
+        type: INT
+        json_path: $.gameData.teams.away.id
+
+      - name: away_team_name
+        type: VARCHAR(100)
+        json_path: $.gameData.teams.away.name
+
+      # Game status
+      - name: abstract_game_state
+        type: VARCHAR(20)
+        json_path: $.gameData.status.abstractGameState
+        description: "Preview, Live, Final"
+
+      - name: coded_game_state
+        type: VARCHAR(5)
+        json_path: $.gameData.status.codedGameState
+
+      - name: detailed_state
+        type: VARCHAR(50)
+        json_path: $.gameData.status.detailedState
+
+      - name: status_code
+        type: VARCHAR(5)
+        json_path: $.gameData.status.statusCode
+
+      - name: reason
+        type: TEXT
+        json_path: $.gameData.status.reason
+
+      # Scores
+      - name: home_score
+        type: INT
+        json_path: $.liveData.linescore.teams.home.runs
+
+      - name: away_score
+        type: INT
+        json_path: $.liveData.linescore.teams.away.runs
+
+      # Weather
+      - name: weather_condition
+        type: VARCHAR(50)
+        json_path: $.gameData.weather.condition
+
+      - name: weather_temp
+        type: INT
+        json_path: $.gameData.weather.temp
+
+      - name: weather_wind
+        type: VARCHAR(50)
+        json_path: $.gameData.weather.wind
+
+      # Metadata
+      - name: source_raw_id
+        type: BIGINT
+        source_field: id
+        description: "FK to game.live_game_v1.id"
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+      - name: transform_timestamp
+        type: TIMESTAMPTZ
+        expression: current_timestamp()
+
+    relationships:
+      - to_table: venue.venue
+        from_field: venue_id
+        to_field: venue_id
+        type: many_to_one
+
+      - to_table: team.team
+        from_field: home_team_id
+        to_field: team_id
+        type: many_to_one
+
+      - to_table: team.team
+        from_field: away_team_id
+        to_field: team_id
+        type: many_to_one
+
+    indexes:
+      - columns: [game_date, game_pk]
+        type: btree
+      - columns: [venue_id]
+        type: btree
+      - columns: [home_team_id, away_team_id]
+        type: btree
+      - columns: [abstract_game_state]
+        type: btree
+
+    data_quality:
+      - rule: game_pk > 0
+        severity: error
+      - rule: game_date >= '2000-01-01'
+        severity: error
+      - rule: home_team_id != away_team_id
+        severity: error
+
+  # ========================================
+  # 2. Linescore (Inning-by-inning)
+  # ========================================
+  - name: game.live_game_linescore_innings
+    description: "Inning-by-inning scoring breakdown"
+    partition_by: game_date
+    primary_key: [game_pk, inning_number, half_inning]
+    upsert_keys: [game_pk, inning_number, half_inning, source_captured_at]
+
+    array_source: $.liveData.linescore.innings
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.gamePk
+        nullable: false
+
+      - name: inning_number
+        type: INT
+        json_path: $.num
+        nullable: false
+
+      - name: half_inning
+        type: VARCHAR(10)
+        json_path: $.ordinalNum
+        description: "Top or Bottom"
+
+      - name: home_runs
+        type: INT
+        json_path: $.home.runs
+        default: 0
+
+      - name: away_runs
+        type: INT
+        json_path: $.away.runs
+        default: 0
+
+      - name: home_hits
+        type: INT
+        json_path: $.home.hits
+        default: 0
+
+      - name: away_hits
+        type: INT
+        json_path: $.away.hits
+        default: 0
+
+      - name: home_errors
+        type: INT
+        json_path: $.home.errors
+        default: 0
+
+      - name: away_errors
+        type: INT
+        json_path: $.away.errors
+        default: 0
+
+      - name: home_left_on_base
+        type: INT
+        json_path: $.home.leftOnBase
+        default: 0
+
+      - name: away_left_on_base
+        type: INT
+        json_path: $.away.leftOnBase
+        default: 0
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_metadata
+        from_field: game_pk
+        to_field: game_pk
+        type: many_to_one
+
+  # ========================================
+  # 3. Players in Game
+  # ========================================
+  - name: game.live_game_players
+    description: "All players involved in the game (51+ per game)"
+    partition_by: game_date
+    primary_key: [game_pk, player_id]
+    upsert_keys: [game_pk, player_id, source_captured_at]
+
+    # Extract from $.gameData.players object (keys are player IDs)
+    object_source: $.gameData.players
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.gamePk
+        nullable: false
+
+      - name: player_id
+        type: INT
+        json_path: $.id
+        nullable: false
+
+      - name: full_name
+        type: VARCHAR(100)
+        json_path: $.fullName
+
+      - name: first_name
+        type: VARCHAR(50)
+        json_path: $.firstName
+
+      - name: last_name
+        type: VARCHAR(50)
+        json_path: $.lastName
+
+      - name: primary_number
+        type: VARCHAR(5)
+        json_path: $.primaryNumber
+
+      - name: birth_date
+        type: DATE
+        json_path: $.birthDate
+
+      - name: current_age
+        type: INT
+        json_path: $.currentAge
+
+      - name: birth_city
+        type: VARCHAR(100)
+        json_path: $.birthCity
+
+      - name: birth_country
+        type: VARCHAR(100)
+        json_path: $.birthCountry
+
+      - name: height
+        type: VARCHAR(10)
+        json_path: $.height
+
+      - name: weight
+        type: INT
+        json_path: $.weight
+
+      - name: bats
+        type: VARCHAR(1)
+        json_path: $.batSide.code
+
+      - name: throws
+        type: VARCHAR(1)
+        json_path: $.pitchHand.code
+
+      - name: primary_position_code
+        type: VARCHAR(2)
+        json_path: $.primaryPosition.code
+
+      - name: primary_position_name
+        type: VARCHAR(50)
+        json_path: $.primaryPosition.name
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_metadata
+        from_field: game_pk
+        to_field: game_pk
+        type: many_to_one
+
+      - to_table: person.person
+        from_field: player_id
+        to_field: person_id
+        type: many_to_one
+
+    indexes:
+      - columns: [player_id]
+        type: btree
+      - columns: [game_pk, player_id]
+        type: btree
+
+  # ========================================
+  # 4. All Plays (At-Bats)
+  # ========================================
+  - name: game.live_game_plays
+    description: "All plays in the game (at-bats, ~75 per game)"
+    partition_by: game_date
+    primary_key: [game_pk, play_id]
+    upsert_keys: [game_pk, play_id, source_captured_at]
+
+    array_source: $.liveData.plays.allPlays
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.gamePk
+        nullable: false
+
+      - name: play_id
+        type: VARCHAR(50)
+        json_path: $.playId
+        nullable: false
+
+      - name: at_bat_index
+        type: INT
+        json_path: $.atBatIndex
+
+      # Inning context
+      - name: inning
+        type: INT
+        json_path: $.about.inning
+
+      - name: half_inning
+        type: VARCHAR(10)
+        json_path: $.about.halfInning
+
+      - name: is_top_inning
+        type: BOOLEAN
+        json_path: $.about.isTopInning
+
+      # Outs
+      - name: outs_before
+        type: INT
+        json_path: $.about.startTime
+
+      - name: outs_after
+        type: INT
+        json_path: $.count.outs
+
+      # Result
+      - name: event_type
+        type: VARCHAR(50)
+        json_path: $.result.eventType
+
+      - name: event
+        type: VARCHAR(100)
+        json_path: $.result.event
+
+      - name: description
+        type: TEXT
+        json_path: $.result.description
+
+      - name: rbi
+        type: INT
+        json_path: $.result.rbi
+        default: 0
+
+      - name: away_score
+        type: INT
+        json_path: $.result.awayScore
+
+      - name: home_score
+        type: INT
+        json_path: $.result.homeScore
+
+      # Players involved
+      - name: batter_id
+        type: INT
+        json_path: $.matchup.batter.id
+
+      - name: pitcher_id
+        type: INT
+        json_path: $.matchup.pitcher.id
+
+      - name: batter_side
+        type: VARCHAR(1)
+        json_path: $.matchup.batSide.code
+
+      - name: pitcher_hand
+        type: VARCHAR(1)
+        json_path: $.matchup.pitchHand.code
+
+      # Count
+      - name: balls
+        type: INT
+        json_path: $.count.balls
+
+      - name: strikes
+        type: INT
+        json_path: $.count.strikes
+
+      # Timing
+      - name: start_time
+        type: TIMESTAMPTZ
+        json_path: $.about.startTime
+
+      - name: end_time
+        type: TIMESTAMPTZ
+        json_path: $.about.endTime
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_metadata
+        from_field: game_pk
+        to_field: game_pk
+        type: many_to_one
+
+      - to_table: game.live_game_players
+        from_field: [game_pk, batter_id]
+        to_field: [game_pk, player_id]
+        type: many_to_one
+
+      - to_table: game.live_game_players
+        from_field: [game_pk, pitcher_id]
+        to_field: [game_pk, player_id]
+        type: many_to_one
+
+    indexes:
+      - columns: [game_pk, at_bat_index]
+        type: btree
+      - columns: [batter_id]
+        type: btree
+      - columns: [pitcher_id]
+        type: btree
+
+  # ========================================
+  # 5. Pitch Events (Every Pitch) - PITCH EVENTS ONLY
+  # ========================================
+  - name: game.live_game_pitch_events
+    description: "Every pitch thrown in the game (~250 per game) - PITCH EVENTS ONLY (isPitch=true)"
+    partition_by: game_date
+    primary_key: [game_pk, play_id, pitch_number]
+    upsert_keys: [game_pk, play_id, pitch_number, source_captured_at]
+
+    # Nested array extraction - FILTER FOR PITCHES ONLY
+    array_source: $.liveData.plays.allPlays
+    nested_array: $.playEvents
+    filter: "$.isPitch == true"  # Critical: only pitch events
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.gamePk
+        nullable: false
+
+      - name: play_id
+        type: VARCHAR(50)
+        json_path: parent.playId
+        nullable: false
+
+      - name: pitch_number
+        type: INT
+        json_path: $.pitchNumber
+        nullable: false
+
+      - name: action_index
+        type: INT
+        json_path: $.index
+
+      # Pitch type
+      - name: pitch_type_code
+        type: VARCHAR(10)
+        json_path: $.details.type.code
+
+      - name: pitch_type_description
+        type: VARCHAR(100)
+        json_path: $.details.type.description
+
+      # Pitch call/result
+      - name: pitch_call_code
+        type: VARCHAR(5)
+        json_path: $.details.call.code
+
+      - name: pitch_call_description
+        type: VARCHAR(50)
+        json_path: $.details.call.description
+
+      - name: is_strike
+        type: BOOLEAN
+        json_path: $.details.isStrike
+
+      - name: is_ball
+        type: BOOLEAN
+        json_path: $.details.isBall
+
+      - name: is_in_play
+        type: BOOLEAN
+        json_path: $.details.isInPlay
+
+      # Pitch data
+      - name: start_speed
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.startSpeed
+        description: "MPH"
+
+      - name: end_speed
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.endSpeed
+
+      - name: strike_zone_top
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.strikeZoneTop
+
+      - name: strike_zone_bottom
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.strikeZoneBottom
+
+      # Coordinates (where ball crossed plate)
+      - name: coordinates_x
+        type: NUMERIC(6,2)
+        json_path: $.pitchData.coordinates.x
+
+      - name: coordinates_y
+        type: NUMERIC(6,2)
+        json_path: $.pitchData.coordinates.y
+
+      # Break/movement
+      - name: break_angle
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.breaks.breakAngle
+
+      - name: break_length
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.breaks.breakLength
+
+      - name: break_y
+        type: NUMERIC(5,2)
+        json_path: $.pitchData.breaks.breakY
+
+      - name: spin_rate
+        type: INT
+        json_path: $.pitchData.breaks.spinRate
+
+      - name: spin_direction
+        type: INT
+        json_path: $.pitchData.breaks.spinDirection
+
+      # Count before pitch
+      - name: balls_before
+        type: INT
+        json_path: $.count.balls
+
+      - name: strikes_before
+        type: INT
+        json_path: $.count.strikes
+
+      - name: outs
+        type: INT
+        json_path: $.count.outs
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_plays
+        from_field: [game_pk, play_id]
+        to_field: [game_pk, play_id]
+        type: many_to_one
+
+    indexes:
+      - columns: [game_pk, play_id]
+        type: btree
+      - columns: [pitch_type_code]
+        type: btree
+      - columns: [pitch_call_code]
+        type: btree
+
+  # ========================================
+  # 6. Play Actions (Non-Pitch Events) - PHASE 1 CRITICAL
+  # ========================================
+  - name: game.live_game_play_actions
+    description: "Non-pitch events: substitutions, pickoffs, mound visits, reviews (~10-20 per game) - NON-PITCH EVENTS ONLY (isPitch=false)"
+    partition_by: game_date
+    primary_key: [game_pk, play_id, action_index]
+    upsert_keys: [game_pk, play_id, action_index, source_captured_at]
+
+    # Nested array extraction - FILTER FOR NON-PITCH EVENTS ONLY
+    array_source: $.liveData.plays.allPlays
+    nested_array: $.playEvents
+    filter: "$.isPitch == false"  # Critical: only non-pitch events
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.gamePk
+        nullable: false
+
+      - name: play_id
+        type: VARCHAR(50)
+        json_path: parent.playId
+        nullable: false
+
+      - name: action_index
+        type: INT
+        json_path: $.index
+        nullable: false
+        description: "Index of action within play"
+
+      # Action type
+      - name: action_type
+        type: VARCHAR(50)
+        json_path: $.type
+        description: "substitution, pickoff, caught_stealing, stolen_base, etc."
+
+      - name: event_type
+        type: VARCHAR(50)
+        json_path: $.details.eventType
+
+      - name: description
+        type: TEXT
+        json_path: $.details.description
+
+      # Substitution details
+      - name: is_substitution
+        type: BOOLEAN
+        json_path: $.isSubstitution
+        default: false
+
+      - name: player_out_id
+        type: INT
+        json_path: $.details.fromId
+        description: "Player being replaced (for substitutions)"
+
+      - name: player_in_id
+        type: INT
+        json_path: $.details.toId
+        description: "Player entering game (for substitutions)"
+
+      - name: position
+        type: VARCHAR(10)
+        json_path: $.position.code
+        description: "Position code for substitution"
+
+      - name: batting_order
+        type: INT
+        json_path: $.battingOrder
+        description: "Batting order position"
+
+      # Timing
+      - name: start_time
+        type: TIMESTAMPTZ
+        json_path: $.startTime
+
+      - name: end_time
+        type: TIMESTAMPTZ
+        json_path: $.endTime
+
+      # Count/outs context
+      - name: balls
+        type: INT
+        json_path: $.count.balls
+
+      - name: strikes
+        type: INT
+        json_path: $.count.strikes
+
+      - name: outs
+        type: INT
+        json_path: $.count.outs
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_plays
+        from_field: [game_pk, play_id]
+        to_field: [game_pk, play_id]
+        type: many_to_one
+
+    indexes:
+      - columns: [game_pk, play_id]
+        type: btree
+      - columns: [action_type]
+        type: btree
+      - columns: [player_in_id]
+        type: btree
+      - columns: [player_out_id]
+        type: btree
+
+  # ========================================
+  # 7. Fielding Credits - PHASE 1 CRITICAL
+  # ========================================
+  - name: game.live_game_fielding_credits
+    description: "Defensive credits for each play (putouts, assists, errors)"
+    partition_by: game_date
+    primary_key: [game_pk, play_id, event_index, credit_index]
+    upsert_keys: [game_pk, play_id, event_index, credit_index, source_captured_at]
+
+    # Triple-nested array: plays → playEvents → credits
+    array_source: $.liveData.plays.allPlays
+    nested_array: $.playEvents
+    nested_array_2: $.credits  # Third level of nesting
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.gamePk
+        nullable: false
+
+      - name: play_id
+        type: VARCHAR(50)
+        json_path: parent.parent.playId
+        nullable: false
+
+      - name: event_index
+        type: INT
+        json_path: parent.index
+        nullable: false
+        description: "Index of event within play"
+
+      - name: credit_index
+        type: INT
+        expression: "ROW_NUMBER() OVER (PARTITION BY game_pk, play_id, event_index ORDER BY value)"
+        nullable: false
+        description: "Index of credit within event"
+
+      # Credit details
+      - name: player_id
+        type: INT
+        json_path: $.player.id
+        nullable: false
+
+      - name: player_name
+        type: VARCHAR(100)
+        json_path: $.player.link
+
+      - name: position_code
+        type: VARCHAR(5)
+        json_path: $.position.code
+        description: "P, C, 1B, 2B, 3B, SS, LF, CF, RF"
+
+      - name: position_name
+        type: VARCHAR(50)
+        json_path: $.position.name
+
+      - name: credit_type
+        type: VARCHAR(20)
+        json_path: $.credit
+        description: "f_putout, f_assist, f_error, f_fielded_ball, etc."
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_plays
+        from_field: [game_pk, play_id]
+        to_field: [game_pk, play_id]
+        type: many_to_one
+
+      - to_table: game.live_game_players
+        from_field: [game_pk, player_id]
+        to_field: [game_pk, player_id]
+        type: many_to_one
+
+    indexes:
+      - columns: [game_pk, play_id]
+        type: btree
+      - columns: [player_id]
+        type: btree
+      - columns: [credit_type]
+        type: btree
+      - columns: [position_code]
+        type: btree
+
+  # ========================================
+  # 8. Runners (Base Runners per Play)
+  # ========================================
+  - name: game.live_game_runners
+    description: "Base runners and their movements for each play"
+    partition_by: game_date
+    primary_key: [game_pk, play_id, runner_index]
+    upsert_keys: [game_pk, play_id, runner_index, source_captured_at]
+
+    # Extract runners from plays
+    array_source: $.liveData.plays.allPlays
+    nested_array: $.runners
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.gamePk
+        nullable: false
+
+      - name: play_id
+        type: VARCHAR(50)
+        json_path: parent.playId
+        nullable: false
+
+      - name: runner_index
+        type: INT
+        json_path: $.movement.originBase
+        nullable: false
+        description: "Index of runner (0-2 for bases)"
+
+      - name: runner_id
+        type: INT
+        json_path: $.details.runner.id
+
+      - name: start_base
+        type: VARCHAR(5)
+        json_path: $.movement.start
+        description: "Base runner started on (1B, 2B, 3B, score)"
+
+      - name: end_base
+        type: VARCHAR(5)
+        json_path: $.movement.end
+
+      - name: is_out
+        type: BOOLEAN
+        json_path: $.movement.isOut
+        default: false
+
+      - name: out_number
+        type: INT
+        json_path: $.movement.outNumber
+
+      - name: event_type
+        type: VARCHAR(50)
+        json_path: $.details.event
+
+      - name: movement_reason
+        type: VARCHAR(100)
+        json_path: $.details.movementReason
+
+      - name: is_scoring_event
+        type: BOOLEAN
+        json_path: $.details.isScoringEvent
+        default: false
+
+      - name: rbi
+        type: BOOLEAN
+        json_path: $.details.rbi
+        default: false
+
+      - name: earned_run
+        type: BOOLEAN
+        json_path: $.details.earned
+        default: true
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_plays
+        from_field: [game_pk, play_id]
+        to_field: [game_pk, play_id]
+        type: many_to_one
+
+    indexes:
+      - columns: [game_pk, play_id]
+        type: btree
+      - columns: [runner_id]
+        type: btree
+
+  # ========================================
+  # 7. Scoring Plays
+  # ========================================
+  - name: game.live_game_scoring_plays
+    description: "Plays that resulted in runs scored"
+    partition_by: game_date
+    primary_key: [game_pk, play_index]
+    upsert_keys: [game_pk, play_index, source_captured_at]
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        source_field: game_pk
+        nullable: false
+
+      - name: play_index
+        type: INT
+        nullable: false
+        description: "Index from scoringPlays array"
+
+      - name: inning
+        type: INT
+
+      - name: half_inning
+        type: VARCHAR(10)
+
+      - name: description
+        type: TEXT
+
+      - name: runs_scored
+        type: INT
+        default: 1
+
+      - name: away_score_after
+        type: INT
+
+      - name: home_score_after
+        type: INT
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_metadata
+        from_field: game_pk
+        to_field: game_pk
+        type: many_to_one
+
+  # ========================================
+  # 8-9. Batting Orders (Home & Away)
+  # ========================================
+  - name: game.live_game_home_batting_order
+    description: "Home team batting order"
+    partition_by: game_date
+    primary_key: [game_pk, batting_position]
+    upsert_keys: [game_pk, batting_position, source_captured_at]
+
+    # Extract from boxscore.teams.home.battingOrder array
+    array_source: $.liveData.boxscore.teams.home.battingOrder
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: batting_position
+        type: INT
+        expression: "ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY value)"
+        nullable: false
+
+      - name: player_id
+        type: INT
+        json_path: $
+        nullable: false
+        description: "Player ID from battingOrder array element"
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  - name: game.live_game_away_batting_order
+    description: "Away team batting order"
+    partition_by: game_date
+    primary_key: [game_pk, batting_position]
+    upsert_keys: [game_pk, batting_position, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.away.battingOrder
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: batting_position
+        type: INT
+        expression: "ROW_NUMBER() OVER (PARTITION BY game_pk ORDER BY value)"
+        nullable: false
+
+      - name: player_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  # ========================================
+  # 10-11. Pitchers (Home & Away)
+  # ========================================
+  - name: game.live_game_home_pitchers
+    description: "Home team pitchers used in game"
+    partition_by: game_date
+    primary_key: [game_pk, pitcher_id]
+    upsert_keys: [game_pk, pitcher_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.home.pitchers
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: pitcher_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  - name: game.live_game_away_pitchers
+    description: "Away team pitchers used in game"
+    partition_by: game_date
+    primary_key: [game_pk, pitcher_id]
+    upsert_keys: [game_pk, pitcher_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.away.pitchers
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: pitcher_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  # ========================================
+  # 12-13. Bench (Home & Away)
+  # ========================================
+  - name: game.live_game_home_bench
+    description: "Home team bench players"
+    partition_by: game_date
+    primary_key: [game_pk, player_id]
+    upsert_keys: [game_pk, player_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.home.bench
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: player_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  - name: game.live_game_away_bench
+    description: "Away team bench players"
+    partition_by: game_date
+    primary_key: [game_pk, player_id]
+    upsert_keys: [game_pk, player_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.away.bench
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: player_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  # ========================================
+  # 14-15. Bullpen (Home & Away)
+  # ========================================
+  - name: game.live_game_home_bullpen
+    description: "Home team bullpen (available relief pitchers)"
+    partition_by: game_date
+    primary_key: [game_pk, pitcher_id]
+    upsert_keys: [game_pk, pitcher_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.home.bullpen
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: pitcher_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  - name: game.live_game_away_bullpen
+    description: "Away team bullpen (available relief pitchers)"
+    partition_by: game_date
+    primary_key: [game_pk, pitcher_id]
+    upsert_keys: [game_pk, pitcher_id, source_captured_at]
+
+    array_source: $.liveData.boxscore.teams.away.bullpen
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.parent.parent.gamePk
+        nullable: false
+
+      - name: pitcher_id
+        type: INT
+        json_path: $
+        nullable: false
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+  # ========================================
+  # 16. Umpires
+  # ========================================
+  - name: game.live_game_umpires
+    description: "Umpiring crew for the game"
+    partition_by: game_date
+    primary_key: [game_pk, umpire_position]
+    upsert_keys: [game_pk, umpire_position, source_captured_at]
+
+    array_source: $.liveData.boxscore.officials
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        json_path: parent.parent.parent.gamePk
+        nullable: false
+
+      - name: umpire_id
+        type: INT
+        json_path: $.official.id
+        nullable: false
+
+      - name: umpire_name
+        type: VARCHAR(100)
+        json_path: $.official.fullName
+
+      - name: umpire_position
+        type: VARCHAR(20)
+        json_path: $.officialType
+        nullable: false
+        description: "Home Plate, First Base, Second Base, Third Base"
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    indexes:
+      - columns: [umpire_id]
+        type: btree
+
+  # ========================================
+  # 17. Venue Details
+  # ========================================
+  - name: game.live_game_venue_details
+    description: "Detailed venue information for the game"
+    partition_by: game_date
+    primary_key: [game_pk]
+    upsert_keys: [game_pk, source_captured_at]
+
+    fields:
+      - name: game_pk
+        type: BIGINT
+        source_field: game_pk
+        nullable: false
+
+      - name: venue_id
+        type: INT
+        json_path: $.gameData.venue.id
+        nullable: false
+
+      - name: venue_name
+        type: VARCHAR(100)
+        json_path: $.gameData.venue.name
+
+      - name: city
+        type: VARCHAR(100)
+        json_path: $.gameData.venue.location.city
+
+      - name: state
+        type: VARCHAR(50)
+        json_path: $.gameData.venue.location.state
+
+      - name: country
+        type: VARCHAR(50)
+        json_path: $.gameData.venue.location.country
+
+      - name: timezone_id
+        type: VARCHAR(50)
+        json_path: $.gameData.venue.timeZone.id
+
+      - name: timezone_offset
+        type: INT
+        json_path: $.gameData.venue.timeZone.offset
+        description: "Offset from UTC in hours"
+
+      - name: field_info
+        type: JSONB
+        json_path: $.gameData.venue.fieldInfo
+        description: "Field dimensions, surface type, roof type, etc."
+
+      - name: is_active
+        type: BOOLEAN
+        json_path: $.gameData.venue.active
+        default: true
+
+      - name: season
+        type: VARCHAR(4)
+        json_path: $.gameData.venue.season
+
+      - name: source_captured_at
+        type: TIMESTAMPTZ
+        source_field: captured_at
+
+    relationships:
+      - to_table: game.live_game_metadata
+        from_field: game_pk
+        to_field: game_pk
+        type: one_to_one
+
+    indexes:
+      - columns: [venue_id]
+        type: btree
+
+# Export configuration
+export:
+  s3:
+    enabled: true
+    bucket: mlb-data-platform
+    path: normalized/game
+    format: parquet
+    partition_by: game_date
+    compression: snappy
+
+  delta:
+    enabled: true
+    path: s3://mlb-data-platform/delta/game
+    z_order_by: [game_pk, player_id]
+    optimize_writes: true
