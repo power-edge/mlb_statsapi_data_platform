@@ -1,0 +1,58 @@
+# Dockerfile for MLB Data Platform Spark Jobs
+# Includes Java 17, Python 3.11, PySpark 3.5, and all dependencies
+
+FROM eclipse-temurin:17-jre-jammy
+
+# Install Python 3.11 and system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    curl \
+    procps \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Upgrade pip and install uv
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install uv
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ ./src/
+COPY examples/ ./examples/
+COPY .git ./.git
+
+# Install Python dependencies using uv
+# Set fallback version for setuptools-scm
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0
+RUN uv pip install --system -e .
+
+# Download PostgreSQL JDBC driver
+RUN mkdir -p /opt/spark/jars && \
+    curl -L https://jdbc.postgresql.org/download/postgresql-42.6.0.jar \
+    -o /opt/spark/jars/postgresql-42.6.0.jar
+
+# Set Spark environment variables
+ENV SPARK_HOME=/usr/local/lib/python3.11/dist-packages/pyspark
+ENV PYTHONPATH=/app/src:${PYTHONPATH}
+
+# Download Spark Kubernetes entrypoint scripts (required for Spark Operator)
+# These are from the official Apache Spark repository
+RUN mkdir -p /opt && \
+    curl -L https://raw.githubusercontent.com/apache/spark/v3.5.0/resource-managers/kubernetes/docker/src/main/dockerfiles/spark/entrypoint.sh \
+      -o /opt/entrypoint.sh && \
+    curl -L https://raw.githubusercontent.com/apache/spark/v3.5.0/resource-managers/kubernetes/docker/src/main/dockerfiles/spark/decom.sh \
+      -o /opt/decom.sh && \
+    chmod +x /opt/entrypoint.sh /opt/decom.sh
+
+# Set Spark Kubernetes entrypoint
+WORKDIR /opt/spark/work-dir
+ENTRYPOINT ["/opt/entrypoint.sh"]

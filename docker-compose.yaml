@@ -85,7 +85,7 @@ services:
     image: dpage/pgadmin4:latest
     container_name: mlb-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@mlb.local
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_CONFIG_SERVER_MODE: 'False'
     ports:
@@ -114,6 +114,53 @@ services:
     profiles:
       - tools
 
+  # Metabase - Data Visualization & BI (optional)
+  metabase:
+    image: metabase/metabase:latest
+    container_name: mlb-metabase
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: mlb_admin
+      MB_DB_PASSWORD: mlb_dev_password
+      MB_DB_HOST: postgres
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mlb-network
+    profiles:
+      - tools
+
+  # Spark - Transformation Jobs
+  spark:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.spark
+    container_name: mlb-spark
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: mlb_games
+      POSTGRES_USER: mlb_admin
+      POSTGRES_PASSWORD: mlb_dev_password
+      SPARK_MASTER: local[*]
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./src:/app/src
+      - ./examples:/app/examples
+      - ./config:/app/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mlb-network
+    profiles:
+      - spark
+
 volumes:
   postgres_data:
     driver: local
@@ -124,6 +171,8 @@ volumes:
   pgadmin_data:
     driver: local
   redisinsight_data:
+    driver: local
+  metabase_data:
     driver: local
 
 networks:

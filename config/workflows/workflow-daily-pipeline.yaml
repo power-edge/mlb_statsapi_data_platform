@@ -1,0 +1,299 @@
+# Daily Pipeline Workflow
+# Orchestrates the full ingestion and transformation pipeline:
+# 1. Ingest season data
+# 2. Transform season data
+# 3. Ingest schedule data
+# 4. Transform schedule data
+# 5. For each game in schedule, ingest and transform game data
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: daily-pipeline
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: orchestration
+    pipeline: daily
+spec:
+  entrypoint: daily-pipeline
+
+  # Workflow-level parameters
+  arguments:
+    parameters:
+      - name: date
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{workflow.creationTimestamp.d}}"
+      - name: sport-ids
+        value: "[1]"  # MLB by default
+      - name: export-to-delta
+        value: "false"
+
+  # Service account for accessing secrets
+  serviceAccountName: mlb-data-platform-sa
+
+  # Parallelism limits
+  parallelism: 10
+
+  templates:
+    # Main orchestration pipeline
+    - name: daily-pipeline
+      dag:
+        tasks:
+          # Phase 1: Season data (prerequisite for everything)
+          - name: ingest-season
+            template: run-ingestion
+            arguments:
+              parameters:
+                - name: job-config
+                  value: "season_daily.yaml"
+
+          - name: transform-season
+            template: submit-workflow
+            dependencies: [ingest-season]
+            arguments:
+              parameters:
+                - name: workflow-file
+                  value: "workflow-season-transform.yaml"
+
+          # Phase 2: Schedule data (depends on season)
+          - name: ingest-schedule
+            template: run-ingestion
+            dependencies: [transform-season]
+            arguments:
+              parameters:
+                - name: job-config
+                  value: "schedule_daily.yaml"
+
+          - name: transform-schedule
+            template: submit-workflow
+            dependencies: [ingest-schedule]
+            arguments:
+              parameters:
+                - name: workflow-file
+                  value: "workflow-schedule-transform.yaml"
+
+          # Phase 3: Get list of games from schedule
+          - name: get-games-list
+            template: query-games-list
+            dependencies: [transform-schedule]
+
+          # Phase 4: Ingest and transform each game (parallel)
+          - name: process-games
+            template: process-game
+            dependencies: [get-games-list]
+            arguments:
+              parameters:
+                - name: game-pk
+                  value: "{{item}}"
+            withParam: "{{tasks.get-games-list.outputs.result}}"
+
+    # Template: Run ingestion job
+    - name: run-ingestion
+      inputs:
+        parameters:
+          - name: job-config
+      container:
+        image: mlb-data-platform/ingestion:latest
+        command: [uv, run, mlb-etl, ingest]
+        args:
+          - --job
+          - /config/jobs/{{inputs.parameters.job-config}}
+          - --save
+          - --db-host
+          - $(POSTGRES_HOST)
+          - --db-port
+          - "5432"
+          - --db-user
+          - $(POSTGRES_USER)
+          - --db-password
+          - $(POSTGRES_PASSWORD)
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+        volumeMounts:
+          - name: job-configs
+            mountPath: /config/jobs
+      volumes:
+        - name: job-configs
+          configMap:
+            name: mlb-job-configs
+
+    # Template: Submit sub-workflow
+    - name: submit-workflow
+      inputs:
+        parameters:
+          - name: workflow-file
+      resource:
+        action: create
+        successCondition: status.phase == Succeeded
+        failureCondition: status.phase == Failed
+        manifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: "{{inputs.parameters.workflow-file}}-"
+            namespace: mlb-data-platform
+          spec:
+            workflowTemplateRef:
+              name: "{{inputs.parameters.workflow-file}}"
+            arguments:
+              parameters:
+                - name: sport-ids
+                  value: "{{workflow.parameters.sport-ids}}"
+                - name: export-to-delta
+                  value: "{{workflow.parameters.export-to-delta}}"
+
+    # Template: Query games list from schedule
+    - name: query-games-list
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "Querying games for date: {{workflow.parameters.date}}"
+
+          # Query game_pks from schedule.games table
+          GAME_PKS=$(PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -t -A -F, \
+            -c "SELECT game_pk FROM schedule.games WHERE game_date = '{{workflow.parameters.date}}' AND status_code IN ('S', 'L', 'F') ORDER BY game_pk;")
+
+          # Convert to JSON array
+          echo "$GAME_PKS" | jq -R -s -c 'split("\n")[:-1]'
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+    # Template: Process individual game
+    - name: process-game
+      inputs:
+        parameters:
+          - name: game-pk
+      dag:
+        tasks:
+          - name: ingest-game
+            template: ingest-game-data
+            arguments:
+              parameters:
+                - name: game-pk
+                  value: "{{inputs.parameters.game-pk}}"
+
+          - name: transform-game
+            template: transform-game-data
+            dependencies: [ingest-game]
+            arguments:
+              parameters:
+                - name: game-pk
+                  value: "{{inputs.parameters.game-pk}}"
+
+    # Template: Ingest game data
+    - name: ingest-game-data
+      inputs:
+        parameters:
+          - name: game-pk
+      container:
+        image: mlb-data-platform/ingestion:latest
+        command: [uv, run, mlb-etl, ingest]
+        args:
+          - --endpoint
+          - game
+          - --method
+          - liveGameV1
+          - --params
+          - "gamePk={{inputs.parameters.game-pk}}"
+          - --save
+          - --db-host
+          - $(POSTGRES_HOST)
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+
+    # Template: Transform game data
+    - name: transform-game-data
+      inputs:
+        parameters:
+          - name: game-pk
+      resource:
+        action: create
+        successCondition: status.phase == Succeeded
+        failureCondition: status.phase == Failed
+        manifest: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Workflow
+          metadata:
+            generateName: game-transform-{{inputs.parameters.game-pk}}-
+            namespace: mlb-data-platform
+          spec:
+            workflowTemplateRef:
+              name: workflow-game-transform
+            arguments:
+              parameters:
+                - name: game-pks
+                  value: "{{inputs.parameters.game-pk}}"
+                - name: start-date
+                  value: ""
+                - name: end-date
+                  value: ""
+                - name: export-to-delta
+                  value: "{{workflow.parameters.export-to-delta}}"
+
+  # Workflow-level volumes
+  volumes:
+    - name: job-configs
+      configMap:
+        name: mlb-job-configs
+
+  # Retry strategy
+  retryStrategy:
+    limit: 1
+    retryPolicy: "OnFailure"
+
+  # TTL after completion (clean up after 24 hours)
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+    secondsAfterSuccess: 86400
+    secondsAfterFailure: 172800  # Keep failures for 48 hours

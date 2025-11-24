@@ -12,8 +12,7 @@ source:
   method: schedule        # Schedule.schedule()
   parameters:
     sportId: 1            # MLB
-    date: ${TODAY}        # Today's date (YYYY-MM-DD)
-    hydrate: "team,linescore"  # Include team and linescore data
+    date: ${TODAY}        # Today's date (YYYY-MM-DD) - auto-resolved
 
 # Ingestion configuration
 ingestion:
@@ -33,13 +32,13 @@ storage:
 
   cache:
     backend: redis
-    key_pattern: "schedule:today:{date}"
+    key_pattern: "schedule:today:${TODAY}"
     ttl: 900  # 15 minutes (same as polling interval)
 
   archive:
     backend: s3
     bucket: raw-data
-    path: "schedule/schedule/date=${date}"
+    path: "schedule/schedule/date=${TODAY}"
     format: avro
     compression: snappy
 
@@ -55,8 +54,8 @@ transform:
     - action: trigger_workflow
       workflow: game_live_polling
       condition: "games_with_status('Live') > 0"
-      parameters:
-        game_pks: "${active_game_pks}"
+      # parameters:
+      #   game_pks: "${active_game_pks}"  # TODO: Implement active game detection
 
 # Dependencies
 dependencies:
@@ -68,7 +67,7 @@ notifications:
   on_new_games:
     - type: log
       level: info
-      message: "New games detected: ${new_game_count}"
+      # message: "New games detected: ${new_game_count}"  # TODO: Implement game count variable
 
 metadata:
   owner: data-engineering

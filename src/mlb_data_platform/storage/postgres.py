@@ -130,7 +130,13 @@ class PostgresStorageBackend:
         # Extract fields if schema metadata provided
         extracted_fields = {}
         if schema_metadata:
-            extracted_fields = self._extract_fields_from_data(data, schema_metadata)
+            # Build combined data structure for extraction (includes response + request params)
+            request_params = metadata.get("request", {}).get("query_params", {})
+            combined_data = {
+                **data,
+                "request_params": request_params
+            }
+            extracted_fields = self._extract_fields_from_data(combined_data, schema_metadata)
 
         # Build INSERT statement
         insert_sql = self._build_insert_sql(table_name, extracted_fields)
@@ -187,8 +193,13 @@ class PostgresStorageBackend:
         # Ensure partition exists
         self._ensure_partition_exists(table_name, partition_date)
 
-        # Extract fields
-        extracted_fields = self._extract_fields_from_data(data, schema_metadata)
+        # Extract fields (include request params for extraction)
+        request_params = metadata.get("request", {}).get("query_params", {})
+        combined_data = {
+            **data,
+            "request_params": request_params
+        }
+        extracted_fields = self._extract_fields_from_data(combined_data, schema_metadata)
 
         # Build UPSERT statement
         upsert_sql = self._build_upsert_sql(table_name, schema_metadata, extracted_fields)

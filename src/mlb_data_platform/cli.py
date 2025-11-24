@@ -12,6 +12,7 @@ from rich.tree import Tree
 
 from .ingestion.client import MLBStatsAPIClient
 from .ingestion.config import StubMode, load_job_config
+from .ingestion.template import resolve_config
 from .schema.registry import get_registry
 from .storage.postgres import PostgresConfig, PostgresStorageBackend
 
@@ -47,8 +48,17 @@ def ingest(
         console.print(f"Save to PostgreSQL: [green]enabled[/green] ({db_host}:{db_port}/{db_name})")
 
     try:
-        # Load job configuration
-        job_config = load_job_config(job)
+        # Prepare template variables
+        template_vars = {}
+        if game_pks:
+            # For single game_pk (first in list)
+            pk_list = [int(pk.strip()) for pk in game_pks.split(",")]
+            if pk_list:
+                template_vars["GAME_PK"] = pk_list[0]
+                template_vars["GAME_PKS"] = game_pks
+
+        # Load job configuration with variable resolution
+        job_config = load_job_config(job, resolve_vars=True, **template_vars)
         console.print(f"✓ Loaded job config: [yellow]{job_config.name}[/yellow]")
         console.print(f"  Type: {job_config.type.value}")
         console.print(f"  Endpoint: {job_config.source.endpoint}.{job_config.source.method}")

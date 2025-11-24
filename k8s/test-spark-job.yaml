@@ -1,0 +1,45 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: test-season-transform
+  namespace: mlb-data-platform
+spec:
+  type: Python
+  mode: cluster
+  image: docker.io/mlb-data-platform/spark:latest
+  imagePullPolicy: IfNotPresent
+  mainApplicationFile: local:///opt/spark/work-dir/examples/spark_jobs/transform_season.py
+
+  sparkVersion: "3.5.0"
+  restartPolicy:
+    type: Never
+
+  driver:
+    cores: 1
+    coreLimit: "1200m"
+    memory: "2g"
+    labels:
+      version: "3.5.0"
+      app: mlb-data-platform
+    serviceAccount: mlb-data-platform-sa
+    env:
+      - name: SPORT_IDS
+        value: "[1]"
+      - name: EXPORT_TO_DELTA
+        value: "false"
+      - name: POSTGRES_HOST
+        value: "postgres"
+      - name: POSTGRES_USER
+        value: "mlb_admin"
+      - name: POSTGRES_PASSWORD
+        value: "mlb_admin_password"
+      - name: POSTGRES_DB
+        value: "mlb_games"
+
+  executor:
+    cores: 1
+    instances: 2
+    memory: "2g"
+    labels:
+      version: "3.5.0"
+      app: mlb-data-platform

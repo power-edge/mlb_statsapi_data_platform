@@ -22,10 +22,14 @@ Usage:
     transform.run(incremental=False, start_date='2024-01-01')  # Full backfill
 """
 
-from mlb_data_platform.transform.base import BaseTransform
-from mlb_data_platform.transform.live_game import LiveGameTransform
+from mlb_data_platform.transform.base import BaseTransformation
+from mlb_data_platform.transform.season import SeasonTransformation
+from mlb_data_platform.transform.schedule import ScheduleTransformation
+from mlb_data_platform.transform.game import LiveGameTransformation
 
 __all__ = [
-    "BaseTransform",
-    "LiveGameTransform",
+    "BaseTransformation",
+    "SeasonTransformation",
+    "ScheduleTransformation",
+    "LiveGameTransformation",
 ]
