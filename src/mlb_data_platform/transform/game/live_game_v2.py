@@ -852,9 +852,67 @@ class LiveGameTransformV2(BaseTransformation):
         return plays_extracted
 
     def _extract_play_actions(self, raw_df: DataFrame) -> DataFrame:
-        """Extract play actions (placeholder)."""
-        # TODO: Implement play actions extraction
-        return self.spark.createDataFrame([], "game_pk INT, play_id STRING")
+        """Extract play actions (non-pitch events like delays, reviews, substitutions)."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                        ]), True),
+                        StructField("playEvents", ArrayType(StructType([
+                            StructField("isPitch", BooleanType(), True),
+                            StructField("type", StringType(), True),
+                            StructField("index", IntegerType(), True),
+                            StructField("startTime", StringType(), True),
+                            StructField("endTime", StringType(), True),
+                            StructField("details", StructType([
+                                StructField("event", StringType(), True),
+                                StructField("eventType", StringType(), True),
+                                StructField("description", StringType(), True),
+                                StructField("awayScore", IntegerType(), True),
+                                StructField("homeScore", IntegerType(), True),
+                            ]), True),
+                            StructField("player", StructType([
+                                StructField("id", IntegerType(), True),
+                            ]), True),
+                        ])), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        plays_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.allPlays")).alias("play")
+        )
+
+        actions_df = plays_df.select(
+            F.col("game_pk"),
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.explode(F.col("play.playEvents")).alias("event")
+        ).filter(F.col("event.isPitch") == False)
+
+        actions_extracted = actions_df.select(
+            F.col("game_pk"),
+            F.col("at_bat_index"),
+            F.col("event.index").alias("event_index"),
+            F.col("event.type").alias("event_type"),
+            F.col("event.startTime").cast(TimestampType()).alias("start_time"),
+            F.col("event.endTime").cast(TimestampType()).alias("end_time"),
+            F.col("event.details.event").alias("event"),
+            F.col("event.details.eventType").alias("event_type_code"),
+            F.col("event.details.description").alias("description"),
+            F.col("event.details.awayScore").alias("away_score"),
+            F.col("event.details.homeScore").alias("home_score"),
+            F.col("event.player.id").alias("player_id"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return actions_extracted
 
     def _extract_pitch_events(self, raw_df: DataFrame) -> DataFrame:
         """Extract every pitch thrown with complete Statcast data.
@@ -1057,16 +1115,196 @@ class LiveGameTransformV2(BaseTransformation):
         return pitches_df
 
     def _extract_runners(self, raw_df: DataFrame) -> DataFrame:
-        """Extract runner movements (placeholder)."""
-        # TODO: Implement runners extraction
-        return self.spark.createDataFrame([], "game_pk INT, runner_id INT")
+        """Extract base runner movements and scoring events."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                        ]), True),
+                        StructField("runners", ArrayType(StructType([
+                            StructField("movement", StructType([
+                                StructField("originBase", StringType(), True),
+                                StructField("start", StringType(), True),
+                                StructField("end", StringType(), True),
+                                StructField("outBase", StringType(), True),
+                                StructField("isOut", BooleanType(), True),
+                                StructField("outNumber", IntegerType(), True),
+                            ]), True),
+                            StructField("details", StructType([
+                                StructField("event", StringType(), True),
+                                StructField("eventType", StringType(), True),
+                                StructField("runner", StructType([
+                                    StructField("id", IntegerType(), True),
+                                    StructField("fullName", StringType(), True),
+                                ]), True),
+                                StructField("responsiblePitcher", StructType([
+                                    StructField("id", IntegerType(), True),
+                                ]), True),
+                                StructField("isScoringEvent", BooleanType(), True),
+                                StructField("rbi", BooleanType(), True),
+                                StructField("earned", BooleanType(), True),
+                                StructField("teamUnearned", BooleanType(), True),
+                            ]), True),
+                        ])), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        plays_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.allPlays")).alias("play")
+        )
+
+        runners_df = plays_df.select(
+            F.col("game_pk"),
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.explode(F.col("play.runners")).alias("runner")
+        )
+
+        runners_extracted = runners_df.select(
+            F.col("game_pk"),
+            F.col("at_bat_index"),
+            F.col("runner.details.runner.id").alias("runner_id"),
+            F.col("runner.details.runner.fullName").alias("runner_name"),
+            F.col("runner.movement.originBase").alias("origin_base"),
+            F.col("runner.movement.start").alias("start_base"),
+            F.col("runner.movement.end").alias("end_base"),
+            F.col("runner.movement.outBase").alias("out_base"),
+            F.col("runner.movement.isOut").alias("is_out"),
+            F.col("runner.movement.outNumber").alias("out_number"),
+            F.col("runner.details.event").alias("event"),
+            F.col("runner.details.eventType").alias("event_type"),
+            F.col("runner.details.responsiblePitcher.id").alias("responsible_pitcher_id"),
+            F.col("runner.details.isScoringEvent").alias("is_scoring_event"),
+            F.col("runner.details.rbi").alias("rbi"),
+            F.col("runner.details.earned").alias("earned"),
+            F.col("runner.details.teamUnearned").alias("team_unearned"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return runners_extracted
 
     def _extract_scoring_plays(self, raw_df: DataFrame) -> DataFrame:
-        """Extract scoring plays (placeholder)."""
-        # TODO: Implement scoring plays extraction
-        return self.spark.createDataFrame([], "game_pk INT, play_id STRING")
+        """Extract plays that resulted in runs scored."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("scoringPlays", ArrayType(IntegerType()), True),
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                            StructField("inning", IntegerType(), True),
+                            StructField("halfInning", StringType(), True),
+                        ]), True),
+                        StructField("result", StructType([
+                            StructField("event", StringType(), True),
+                            StructField("description", StringType(), True),
+                            StructField("rbi", IntegerType(), True),
+                            StructField("awayScore", IntegerType(), True),
+                            StructField("homeScore", IntegerType(), True),
+                        ]), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        # Get scoring play indices
+        scoring_indices = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.scoringPlays")).alias("scoring_index")
+        )
+
+        # Get all plays
+        all_plays = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.posexplode(F.col("parsed.liveData.plays.allPlays")).alias("idx", "play")
+        )
+
+        # Join to get only scoring plays
+        scoring_plays = scoring_indices.join(
+            all_plays,
+            (scoring_indices.game_pk == all_plays.game_pk) &
+            (scoring_indices.scoring_index == all_plays.idx)
+        ).select(
+            all_plays.game_pk,
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.col("play.about.inning").alias("inning"),
+            F.col("play.about.halfInning").alias("half_inning"),
+            F.col("play.result.event").alias("event"),
+            F.col("play.result.description").alias("description"),
+            F.col("play.result.rbi").alias("rbi"),
+            F.col("play.result.awayScore").alias("away_score"),
+            F.col("play.result.homeScore").alias("home_score"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return scoring_plays
 
     def _extract_fielding_credits(self, raw_df: DataFrame) -> DataFrame:
-        """Extract fielding credits (placeholder)."""
-        # TODO: Implement fielding credits extraction
-        return self.spark.createDataFrame([], "game_pk INT, player_id INT")
+        """Extract defensive credits (putouts, assists, errors)."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                        ]), True),
+                        StructField("runners", ArrayType(StructType([
+                            StructField("credits", ArrayType(StructType([
+                                StructField("player", StructType([
+                                    StructField("id", IntegerType(), True),
+                                ]), True),
+                                StructField("position", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("name", StringType(), True),
+                                    StructField("abbreviation", StringType(), True),
+                                ]), True),
+                                StructField("credit", StringType(), True),
+                            ])), True),
+                        ])), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        plays_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.allPlays")).alias("play")
+        )
+
+        runners_df = plays_df.select(
+            F.col("game_pk"),
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.explode(F.col("play.runners")).alias("runner")
+        )
+
+        credits_df = runners_df.select(
+            F.col("game_pk"),
+            F.col("at_bat_index"),
+            F.explode(F.col("runner.credits")).alias("credit")
+        )
+
+        credits_extracted = credits_df.select(
+            F.col("game_pk"),
+            F.col("at_bat_index"),
+            F.col("credit.player.id").alias("player_id"),
+            F.col("credit.position.code").alias("position_code"),
+            F.col("credit.position.name").alias("position_name"),
+            F.col("credit.position.abbreviation").alias("position_abbrev"),
+            F.col("credit.credit").alias("credit_type"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return credits_extracted
