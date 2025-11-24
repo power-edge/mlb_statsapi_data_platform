@@ -1,0 +1,69 @@
+name: game_single
+type: batch
+description: Ingest a single game by game_pk
+
+source:
+  endpoint: game
+  method: liveGameV1
+  parameters:
+    game_pk: ${GAME_PK}
+
+storage:
+  backend: postgres
+  table: game.live_game_v1
+  mode: INSERT
+
+  partition_keys:
+    - name: game_date
+      type: date
+      source: response
+      json_path: $.gameData.datetime.officialDate
+
+  extracted_fields:
+    - name: game_pk
+      type: integer
+      required: true
+      source: request_params
+      json_path: $.gamePk
+
+    - name: game_date
+      type: date
+      required: true
+      source: response
+      json_path: $.gameData.datetime.officialDate
+
+    - name: season
+      type: string
+      required: false
+      source: response
+      json_path: $.gameData.game.season
+
+    - name: game_type
+      type: string
+      required: false
+      source: response
+      json_path: $.gameData.game.type
+
+    - name: home_team_id
+      type: integer
+      required: false
+      source: response
+      json_path: $.gameData.teams.home.id
+
+    - name: away_team_id
+      type: integer
+      required: false
+      source: response
+      json_path: $.gameData.teams.away.id
+
+    - name: venue_id
+      type: integer
+      required: false
+      source: response
+      json_path: $.gameData.venue.id
+
+    - name: status_code
+      type: string
+      required: false
+      source: response
+      json_path: $.gameData.status.statusCode
