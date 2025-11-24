@@ -321,23 +321,185 @@ class LiveGameTransformV2(BaseTransformation):
         return metadata_df
 
     def _extract_venue_details(self, raw_df: DataFrame) -> DataFrame:
-        """Extract venue details (placeholder)."""
-        # TODO: Implement venue extraction
-        return self.spark.createDataFrame([], "game_pk INT, venue_id INT")
+        """Extract detailed venue information including field dimensions."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("gameData", StructType([
+                StructField("venue", StructType([
+                    StructField("id", IntegerType(), True),
+                    StructField("name", StringType(), True),
+                    StructField("location", StructType([
+                        StructField("city", StringType(), True),
+                        StructField("state", StringType(), True),
+                        StructField("stateAbbrev", StringType(), True),
+                    ]), True),
+                    StructField("timeZone", StructType([
+                        StructField("id", StringType(), True),
+                        StructField("offset", IntegerType(), True),
+                        StructField("tz", StringType(), True),
+                    ]), True),
+                    StructField("fieldInfo", StructType([
+                        StructField("capacity", IntegerType(), True),
+                        StructField("turfType", StringType(), True),
+                        StructField("roofType", StringType(), True),
+                        StructField("leftLine", IntegerType(), True),
+                        StructField("leftCenter", IntegerType(), True),
+                        StructField("center", IntegerType(), True),
+                        StructField("rightCenter", IntegerType(), True),
+                        StructField("rightLine", IntegerType(), True),
+                    ]), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        venue_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.col("parsed.gameData.venue.id").alias("venue_id"),
+            F.col("parsed.gameData.venue.name").alias("venue_name"),
+            F.col("parsed.gameData.venue.location.city").alias("city"),
+            F.col("parsed.gameData.venue.location.state").alias("state"),
+            F.col("parsed.gameData.venue.location.stateAbbrev").alias("state_abbrev"),
+            F.col("parsed.gameData.venue.timeZone.id").alias("timezone_id"),
+            F.col("parsed.gameData.venue.timeZone.offset").alias("timezone_offset"),
+            F.col("parsed.gameData.venue.timeZone.tz").alias("timezone_tz"),
+            F.col("parsed.gameData.venue.fieldInfo.capacity").alias("capacity"),
+            F.col("parsed.gameData.venue.fieldInfo.turfType").alias("turf_type"),
+            F.col("parsed.gameData.venue.fieldInfo.roofType").alias("roof_type"),
+            F.col("parsed.gameData.venue.fieldInfo.leftLine").alias("left_line"),
+            F.col("parsed.gameData.venue.fieldInfo.leftCenter").alias("left_center"),
+            F.col("parsed.gameData.venue.fieldInfo.center").alias("center"),
+            F.col("parsed.gameData.venue.fieldInfo.rightCenter").alias("right_center"),
+            F.col("parsed.gameData.venue.fieldInfo.rightLine").alias("right_line"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return venue_df
 
     def _extract_umpires(self, raw_df: DataFrame) -> DataFrame:
-        """Extract umpire assignments (placeholder)."""
-        # TODO: Implement umpire extraction
-        return self.spark.createDataFrame([], "game_pk INT, umpire_id INT")
+        """Extract umpire assignments for all positions."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("boxscore", StructType([
+                    StructField("officials", ArrayType(StructType([
+                        StructField("official", StructType([
+                            StructField("id", IntegerType(), True),
+                            StructField("fullName", StringType(), True),
+                        ]), True),
+                        StructField("officialType", StringType(), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        umpires_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.boxscore.officials")).alias("umpire")
+        )
+
+        umpires_extracted = umpires_df.select(
+            F.col("game_pk"),
+            F.col("umpire.official.id").alias("umpire_id"),
+            F.col("umpire.official.fullName").alias("full_name"),
+            F.col("umpire.officialType").alias("position"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return umpires_extracted
 
     # ========================================================================
     # EXTRACTION METHODS - Player Lists (9 tables)
     # ========================================================================
 
     def _extract_all_players(self, raw_df: DataFrame) -> DataFrame:
-        """Extract all players registry (placeholder)."""
-        # TODO: Implement player registry extraction
-        return self.spark.createDataFrame([], "game_pk INT, player_id INT")
+        """Extract all players registry with stats from both teams."""
+        from pyspark.sql.types import MapType
+
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("boxscore", StructType([
+                    StructField("teams", StructType([
+                        StructField("home", StructType([
+                            StructField("players", MapType(StringType(), StructType([
+                                StructField("person", StructType([
+                                    StructField("id", IntegerType(), True),
+                                    StructField("fullName", StringType(), True),
+                                ]), True),
+                                StructField("jerseyNumber", StringType(), True),
+                                StructField("position", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("name", StringType(), True),
+                                    StructField("type", StringType(), True),
+                                    StructField("abbreviation", StringType(), True),
+                                ]), True),
+                                StructField("status", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("description", StringType(), True),
+                                ]), True),
+                            ])), True),
+                        ]), True),
+                        StructField("away", StructType([
+                            StructField("players", MapType(StringType(), StructType([
+                                StructField("person", StructType([
+                                    StructField("id", IntegerType(), True),
+                                    StructField("fullName", StringType(), True),
+                                ]), True),
+                                StructField("jerseyNumber", StringType(), True),
+                                StructField("position", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("name", StringType(), True),
+                                    StructField("type", StringType(), True),
+                                    StructField("abbreviation", StringType(), True),
+                                ]), True),
+                                StructField("status", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("description", StringType(), True),
+                                ]), True),
+                            ])), True),
+                        ]), True),
+                    ]), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        # Extract home players
+        home_players = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.lit("home").alias("team_side"),
+            F.explode(F.col("parsed.liveData.boxscore.teams.home.players")).alias("player_key", "player")
+        )
+
+        # Extract away players
+        away_players = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.lit("away").alias("team_side"),
+            F.explode(F.col("parsed.liveData.boxscore.teams.away.players")).alias("player_key", "player")
+        )
+
+        # Union and extract fields
+        all_players = home_players.union(away_players).select(
+            F.col("game_pk"),
+            F.col("team_side"),
+            F.col("player.person.id").alias("player_id"),
+            F.col("player.person.fullName").alias("full_name"),
+            F.col("player.jerseyNumber").alias("jersey_number"),
+            F.col("player.position.code").alias("position_code"),
+            F.col("player.position.name").alias("position_name"),
+            F.col("player.position.type").alias("position_type"),
+            F.col("player.position.abbreviation").alias("position_abbrev"),
+            F.col("player.status.code").alias("status_code"),
+            F.col("player.status.description").alias("status_description"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return all_players
 
     def _extract_batting_order(self, raw_df: DataFrame, side: str) -> DataFrame:
         """Extract batting order (1-9) for home or away team.
@@ -510,18 +672,184 @@ class LiveGameTransformV2(BaseTransformation):
     # ========================================================================
 
     def _extract_linescore(self, raw_df: DataFrame) -> DataFrame:
-        """Extract linescore innings (placeholder)."""
-        # TODO: Implement linescore extraction
-        return self.spark.createDataFrame([], "game_pk INT, inning INT")
+        """Extract inning-by-inning linescore."""
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("linescore", StructType([
+                    StructField("innings", ArrayType(StructType([
+                        StructField("num", IntegerType(), True),
+                        StructField("ordinalNum", StringType(), True),
+                        StructField("home", StructType([
+                            StructField("runs", IntegerType(), True),
+                            StructField("hits", IntegerType(), True),
+                            StructField("errors", IntegerType(), True),
+                            StructField("leftOnBase", IntegerType(), True),
+                        ]), True),
+                        StructField("away", StructType([
+                            StructField("runs", IntegerType(), True),
+                            StructField("hits", IntegerType(), True),
+                            StructField("errors", IntegerType(), True),
+                            StructField("leftOnBase", IntegerType(), True),
+                        ]), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        innings_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.linescore.innings")).alias("inning")
+        )
+
+        linescore_df = innings_df.select(
+            F.col("game_pk"),
+            F.col("inning.num").alias("inning_number"),
+            F.col("inning.ordinalNum").alias("inning_ordinal"),
+            F.col("inning.home.runs").alias("home_runs"),
+            F.col("inning.home.hits").alias("home_hits"),
+            F.col("inning.home.errors").alias("home_errors"),
+            F.col("inning.home.leftOnBase").alias("home_left_on_base"),
+            F.col("inning.away.runs").alias("away_runs"),
+            F.col("inning.away.hits").alias("away_hits"),
+            F.col("inning.away.errors").alias("away_errors"),
+            F.col("inning.away.leftOnBase").alias("away_left_on_base"),
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return linescore_df
 
     # ========================================================================
     # EXTRACTION METHODS - Play-by-Play (6 tables)
     # ========================================================================
 
     def _extract_plays(self, raw_df: DataFrame) -> DataFrame:
-        """Extract all plays/at-bats (placeholder)."""
-        # TODO: Implement plays extraction
-        return self.spark.createDataFrame([], "game_pk INT, play_id STRING")
+        """Extract all plays/at-bats from the game.
+
+        Each play represents an at-bat with matchup info (batter vs pitcher),
+        result (event type, runs, outs), and metadata.
+
+        Args:
+            raw_df: Raw game data
+
+        Returns:
+            DataFrame with columns: game_pk, at_bat_index, inning, half_inning,
+                batter_id, pitcher_id, event_type, description, rbi, etc.
+        """
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                            StructField("inning", IntegerType(), True),
+                            StructField("halfInning", StringType(), True),
+                            StructField("isTopInning", BooleanType(), True),
+                            StructField("startTime", StringType(), True),
+                            StructField("endTime", StringType(), True),
+                            StructField("isComplete", BooleanType(), True),
+                            StructField("isScoringPlay", BooleanType(), True),
+                            StructField("hasOut", BooleanType(), True),
+                            StructField("hasReview", BooleanType(), True),
+                            StructField("captivatingIndex", IntegerType(), True),
+                        ]), True),
+                        StructField("result", StructType([
+                            StructField("type", StringType(), True),
+                            StructField("event", StringType(), True),
+                            StructField("eventType", StringType(), True),
+                            StructField("description", StringType(), True),
+                            StructField("rbi", IntegerType(), True),
+                            StructField("awayScore", IntegerType(), True),
+                            StructField("homeScore", IntegerType(), True),
+                            StructField("isOut", BooleanType(), True),
+                        ]), True),
+                        StructField("matchup", StructType([
+                            StructField("batter", StructType([
+                                StructField("id", IntegerType(), True),
+                                StructField("fullName", StringType(), True),
+                            ]), True),
+                            StructField("pitcher", StructType([
+                                StructField("id", IntegerType(), True),
+                                StructField("fullName", StringType(), True),
+                            ]), True),
+                            StructField("batSide", StructType([
+                                StructField("code", StringType(), True),
+                                StructField("description", StringType(), True),
+                            ]), True),
+                            StructField("pitchHand", StructType([
+                                StructField("code", StringType(), True),
+                                StructField("description", StringType(), True),
+                            ]), True),
+                            StructField("splits", StructType([
+                                StructField("batter", StringType(), True),
+                                StructField("pitcher", StringType(), True),
+                                StructField("menOnBase", StringType(), True),
+                            ]), True),
+                        ]), True),
+                        StructField("count", StructType([
+                            StructField("balls", IntegerType(), True),
+                            StructField("strikes", IntegerType(), True),
+                            StructField("outs", IntegerType(), True),
+                        ]), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        # Explode allPlays array
+        plays_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.allPlays")).alias("play")
+        )
+
+        # Extract play fields
+        plays_extracted = plays_df.select(
+            F.col("game_pk"),
+            # About
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.col("play.about.inning").alias("inning"),
+            F.col("play.about.halfInning").alias("half_inning"),
+            F.col("play.about.isTopInning").alias("is_top_inning"),
+            F.col("play.about.startTime").cast(TimestampType()).alias("start_time"),
+            F.col("play.about.endTime").cast(TimestampType()).alias("end_time"),
+            F.col("play.about.isComplete").alias("is_complete"),
+            F.col("play.about.isScoringPlay").alias("is_scoring_play"),
+            F.col("play.about.hasOut").alias("has_out"),
+            F.col("play.about.hasReview").alias("has_review"),
+            F.col("play.about.captivatingIndex").alias("captivating_index"),
+            # Result
+            F.col("play.result.type").alias("result_type"),
+            F.col("play.result.event").alias("event"),
+            F.col("play.result.eventType").alias("event_type"),
+            F.col("play.result.description").alias("description"),
+            F.col("play.result.rbi").alias("rbi"),
+            F.col("play.result.awayScore").alias("away_score"),
+            F.col("play.result.homeScore").alias("home_score"),
+            F.col("play.result.isOut").alias("is_out"),
+            # Matchup
+            F.col("play.matchup.batter.id").alias("batter_id"),
+            F.col("play.matchup.batter.fullName").alias("batter_name"),
+            F.col("play.matchup.pitcher.id").alias("pitcher_id"),
+            F.col("play.matchup.pitcher.fullName").alias("pitcher_name"),
+            F.col("play.matchup.batSide.code").alias("bat_side"),
+            F.col("play.matchup.pitchHand.code").alias("pitch_hand"),
+            F.col("play.matchup.splits.batter").alias("split_batter"),
+            F.col("play.matchup.splits.pitcher").alias("split_pitcher"),
+            F.col("play.matchup.splits.menOnBase").alias("men_on_base"),
+            # Count at end of at-bat
+            F.col("play.count.balls").alias("final_balls"),
+            F.col("play.count.strikes").alias("final_strikes"),
+            F.col("play.count.outs").alias("final_outs"),
+            # Metadata
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return plays_extracted
 
     def _extract_play_actions(self, raw_df: DataFrame) -> DataFrame:
         """Extract play actions (placeholder)."""
@@ -529,9 +857,204 @@ class LiveGameTransformV2(BaseTransformation):
         return self.spark.createDataFrame([], "game_pk INT, play_id STRING")
 
     def _extract_pitch_events(self, raw_df: DataFrame) -> DataFrame:
-        """Extract pitch events with Statcast data (placeholder)."""
-        # TODO: Implement pitch events extraction
-        return self.spark.createDataFrame([], "game_pk INT, pitch_number INT")
+        """Extract every pitch thrown with complete Statcast data.
+
+        This includes both pitchData (velocity, spin, movement) and hitData
+        (exit velocity, launch angle, distance) when ball is put in play.
+
+        Args:
+            raw_df: Raw game data
+
+        Returns:
+            DataFrame with columns: game_pk, play_id, pitch_number,
+                pitch_type, start_speed, end_speed, spin_rate,
+                launch_speed, launch_angle, total_distance, trajectory, hardness, etc.
+        """
+        # Schema for play events (pitches only)
+        schema = StructType([
+            StructField("gamePk", IntegerType(), True),
+            StructField("liveData", StructType([
+                StructField("plays", StructType([
+                    StructField("allPlays", ArrayType(StructType([
+                        StructField("about", StructType([
+                            StructField("atBatIndex", IntegerType(), True),
+                            StructField("inning", IntegerType(), True),
+                            StructField("halfInning", StringType(), True),
+                        ]), True),
+                        StructField("playEvents", ArrayType(StructType([
+                            StructField("isPitch", BooleanType(), True),
+                            StructField("type", StringType(), True),
+                            StructField("playId", StringType(), True),
+                            StructField("pitchNumber", IntegerType(), True),
+                            StructField("startTime", StringType(), True),
+                            StructField("endTime", StringType(), True),
+                            StructField("details", StructType([
+                                StructField("call", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("description", StringType(), True),
+                                ]), True),
+                                StructField("code", StringType(), True),
+                                StructField("type", StructType([
+                                    StructField("code", StringType(), True),
+                                    StructField("description", StringType(), True),
+                                ]), True),
+                                StructField("description", StringType(), True),
+                                StructField("isInPlay", BooleanType(), True),
+                                StructField("isStrike", BooleanType(), True),
+                                StructField("isBall", BooleanType(), True),
+                            ]), True),
+                            StructField("count", StructType([
+                                StructField("balls", IntegerType(), True),
+                                StructField("strikes", IntegerType(), True),
+                                StructField("outs", IntegerType(), True),
+                            ]), True),
+                            # Pitch tracking data
+                            StructField("pitchData", StructType([
+                                StructField("startSpeed", DoubleType(), True),
+                                StructField("endSpeed", DoubleType(), True),
+                                StructField("zone", IntegerType(), True),
+                                StructField("extension", DoubleType(), True),
+                                StructField("plateTime", DoubleType(), True),
+                                StructField("strikeZoneTop", DoubleType(), True),
+                                StructField("strikeZoneBottom", DoubleType(), True),
+                                StructField("breaks", StructType([
+                                    StructField("spinRate", IntegerType(), True),
+                                    StructField("spinDirection", IntegerType(), True),
+                                    StructField("breakAngle", DoubleType(), True),
+                                    StructField("breakLength", DoubleType(), True),
+                                    StructField("breakY", DoubleType(), True),
+                                    StructField("breakVertical", DoubleType(), True),
+                                    StructField("breakVerticalInduced", DoubleType(), True),
+                                    StructField("breakHorizontal", DoubleType(), True),
+                                ]), True),
+                                StructField("coordinates", StructType([
+                                    StructField("x", DoubleType(), True),
+                                    StructField("y", DoubleType(), True),
+                                    StructField("pX", DoubleType(), True),
+                                    StructField("pZ", DoubleType(), True),
+                                    StructField("pfxX", DoubleType(), True),
+                                    StructField("pfxZ", DoubleType(), True),
+                                    StructField("x0", DoubleType(), True),
+                                    StructField("y0", DoubleType(), True),
+                                    StructField("z0", DoubleType(), True),
+                                    StructField("vX0", DoubleType(), True),
+                                    StructField("vY0", DoubleType(), True),
+                                    StructField("vZ0", DoubleType(), True),
+                                    StructField("aX", DoubleType(), True),
+                                    StructField("aY", DoubleType(), True),
+                                    StructField("aZ", DoubleType(), True),
+                                ]), True),
+                            ]), True),
+                            # Hit tracking data (Statcast)
+                            StructField("hitData", StructType([
+                                StructField("launchSpeed", DoubleType(), True),
+                                StructField("launchAngle", DoubleType(), True),
+                                StructField("totalDistance", DoubleType(), True),
+                                StructField("trajectory", StringType(), True),
+                                StructField("hardness", StringType(), True),
+                                StructField("location", StringType(), True),
+                                StructField("coordinates", StructType([
+                                    StructField("coordX", DoubleType(), True),
+                                    StructField("coordY", DoubleType(), True),
+                                ]), True),
+                            ]), True),
+                        ])), True),
+                    ])), True),
+                ]), True),
+            ]), True),
+        ])
+
+        parsed_df = raw_df.withColumn("parsed", F.from_json(F.col("data"), schema))
+
+        # Explode plays
+        plays_df = parsed_df.select(
+            F.col("parsed.gamePk").alias("game_pk"),
+            F.explode(F.col("parsed.liveData.plays.allPlays")).alias("play")
+        )
+
+        # Explode play events and filter to pitches only
+        pitch_events_df = plays_df.select(
+            F.col("game_pk"),
+            F.col("play.about.atBatIndex").alias("at_bat_index"),
+            F.col("play.about.inning").alias("inning"),
+            F.col("play.about.halfInning").alias("half_inning"),
+            F.explode(F.col("play.playEvents")).alias("event")
+        ).filter(F.col("event.isPitch") == True)
+
+        # Extract all pitch fields
+        pitches_df = pitch_events_df.select(
+            F.col("game_pk"),
+            F.col("event.playId").alias("play_id"),
+            F.col("at_bat_index"),
+            F.col("inning"),
+            F.col("half_inning"),
+            F.col("event.pitchNumber").alias("pitch_number"),
+            F.col("event.startTime").cast(TimestampType()).alias("start_time"),
+            F.col("event.endTime").cast(TimestampType()).alias("end_time"),
+            # Pitch classification
+            F.col("event.details.type.code").alias("pitch_type"),
+            F.col("event.details.type.description").alias("pitch_type_desc"),
+            F.col("event.details.code").alias("call_code"),
+            F.col("event.details.call.description").alias("call_description"),
+            F.col("event.details.description").alias("description"),
+            # Pitch outcome flags
+            F.col("event.details.isInPlay").alias("is_in_play"),
+            F.col("event.details.isStrike").alias("is_strike"),
+            F.col("event.details.isBall").alias("is_ball"),
+            # Count
+            F.col("event.count.balls").alias("balls"),
+            F.col("event.count.strikes").alias("strikes"),
+            F.col("event.count.outs").alias("outs"),
+            # Pitch tracking (velocity, spin, movement)
+            F.col("event.pitchData.startSpeed").alias("start_speed"),
+            F.col("event.pitchData.endSpeed").alias("end_speed"),
+            F.col("event.pitchData.zone").alias("zone"),
+            F.col("event.pitchData.extension").alias("extension"),
+            F.col("event.pitchData.plateTime").alias("plate_time"),
+            F.col("event.pitchData.strikeZoneTop").alias("strike_zone_top"),
+            F.col("event.pitchData.strikeZoneBottom").alias("strike_zone_bottom"),
+            # Spin data
+            F.col("event.pitchData.breaks.spinRate").alias("spin_rate"),
+            F.col("event.pitchData.breaks.spinDirection").alias("spin_direction"),
+            F.col("event.pitchData.breaks.breakAngle").alias("break_angle"),
+            F.col("event.pitchData.breaks.breakLength").alias("break_length"),
+            F.col("event.pitchData.breaks.breakY").alias("break_y"),
+            F.col("event.pitchData.breaks.breakVertical").alias("break_vertical"),
+            F.col("event.pitchData.breaks.breakVerticalInduced").alias("break_vertical_induced"),
+            F.col("event.pitchData.breaks.breakHorizontal").alias("break_horizontal"),
+            # Pitch location
+            F.col("event.pitchData.coordinates.x").alias("coord_x"),
+            F.col("event.pitchData.coordinates.y").alias("coord_y"),
+            F.col("event.pitchData.coordinates.pX").alias("px"),
+            F.col("event.pitchData.coordinates.pZ").alias("pz"),
+            F.col("event.pitchData.coordinates.pfxX").alias("pfx_x"),
+            F.col("event.pitchData.coordinates.pfxZ").alias("pfx_z"),
+            # Release point
+            F.col("event.pitchData.coordinates.x0").alias("x0"),
+            F.col("event.pitchData.coordinates.y0").alias("y0"),
+            F.col("event.pitchData.coordinates.z0").alias("z0"),
+            # Velocity vectors
+            F.col("event.pitchData.coordinates.vX0").alias("vx0"),
+            F.col("event.pitchData.coordinates.vY0").alias("vy0"),
+            F.col("event.pitchData.coordinates.vZ0").alias("vz0"),
+            # Acceleration vectors
+            F.col("event.pitchData.coordinates.aX").alias("ax"),
+            F.col("event.pitchData.coordinates.aY").alias("ay"),
+            F.col("event.pitchData.coordinates.aZ").alias("az"),
+            # Hit tracking (Statcast) - only populated when ball is put in play
+            F.col("event.hitData.launchSpeed").alias("launch_speed"),
+            F.col("event.hitData.launchAngle").alias("launch_angle"),
+            F.col("event.hitData.totalDistance").alias("total_distance"),
+            F.col("event.hitData.trajectory").alias("trajectory"),
+            F.col("event.hitData.hardness").alias("hardness"),
+            F.col("event.hitData.location").alias("hit_location"),
+            F.col("event.hitData.coordinates.coordX").alias("hit_coord_x"),
+            F.col("event.hitData.coordinates.coordY").alias("hit_coord_y"),
+            # Metadata
+            F.current_timestamp().alias("source_captured_at"),
+        )
+
+        return pitches_df
 
     def _extract_runners(self, raw_df: DataFrame) -> DataFrame:
         """Extract runner movements (placeholder)."""
