@@ -16,16 +16,8 @@ from mlb_data_platform.models import RawLiveGameV1
 # ============================================================================
 # GIVEN steps (Setup)
 # ============================================================================
-
-@given("a clean test database")
-def step_clean_test_database(context):
-    """Clear all test data from raw tables."""
-    from sqlalchemy import text
-
-    with get_session() as session:
-        session.exec(text("TRUNCATE TABLE game.live_game_v1_raw CASCADE;"))
-        session.commit()
-    context.raw_games = []
+# Note: "a clean test database" step is defined in ingestion_pipeline_steps.py
+# to avoid duplicate step definitions across step files.
 
 
 @given("the RawStorageClient is initialized")
@@ -368,10 +360,7 @@ def step_verify_status_code(context, status_code):
     assert context.raw_status_code == status_code
 
 
-@then("the data column should be valid JSONB")
-def step_verify_valid_jsonb(context):
-    """Verify data is valid JSONB."""
-    assert isinstance(context.raw_data, dict)
+# Note: "the data column should be valid JSONB" step is defined in ingestion_pipeline_steps.py
 
 
 @then('the data should contain key "{key}"')

@@ -59,17 +59,43 @@ def count_rows(storage_backend: PostgresStorageBackend, table: str) -> int:
 
 @given("a clean test database")
 def step_clean_ingestion_database(context):
-    """Clean ingestion test database tables."""
+    """Clean ingestion test database tables (raw and normalized).
+
+    This step cleans all test tables including:
+    - Raw JSONB storage (game.live_game_v1)
+    - Normalized tables (season.seasons, schedule.schedule)
+    """
     db_config = get_db_config()
     context.storage_backend = PostgresStorageBackend(db_config)
 
-    # Clean ingestion tables
+    # Tables to clean - uses IF EXISTS to handle missing tables gracefully
+    tables_to_clean = [
+        "season.seasons",
+        "schedule.schedule",
+        "game.live_game_v1",           # Main raw storage (partitioned)
+        "game.live_game_metadata",     # Normalized tables
+        "game.live_game_players",
+        "game.live_game_plays",
+        "game.live_game_pitch_events",
+    ]
+
     with context.storage_backend.pool.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE season.seasons CASCADE")
-            cur.execute("TRUNCATE TABLE schedule.schedule CASCADE")
-            cur.execute("TRUNCATE TABLE game.live_game_v1 CASCADE")
+            for table in tables_to_clean:
+                # Use DO block to safely truncate if table exists
+                cur.execute(f"""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (SELECT 1 FROM information_schema.tables
+                                   WHERE table_schema || '.' || table_name = '{table}') THEN
+                            EXECUTE 'TRUNCATE TABLE {table} CASCADE';
+                        END IF;
+                    END $$;
+                """)
             conn.commit()
+
+    # Initialize context variables for raw ingestion tests
+    context.raw_games = []
 
 
 # ============================================================================
@@ -392,17 +418,8 @@ def step_verify_game_count(context, count):
     assert actual_count == count, f"Expected {count} records, got {actual_count}"
 
 
-@then("the raw table should contain {count:d} records for game_pk {game_pk:d}")
-def step_verify_game_count_for_game_pk(context, count, game_pk):
-    """Verify the number of records for a specific game_pk."""
-    with context.storage_backend.pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT COUNT(*)::int FROM game.live_game_v1 WHERE game_pk = {game_pk}"
-            )
-            result = cur.fetchone()
-            actual_count = result[0] if isinstance(result, tuple) else result
-    assert actual_count == count, f"Expected {count} records for game_pk {game_pk}, got {actual_count}"
+# Note: "the raw table should contain {count:d} records for game_pk {game_pk:d}"
+# is defined in raw_ingestion_steps.py (uses RawLiveGameV1 model for actual raw table)
 
 
 # ============================================================================
