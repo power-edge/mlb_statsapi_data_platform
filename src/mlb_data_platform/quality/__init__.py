@@ -10,4 +10,31 @@ Why PyDeequ over Great Expectations:
 - Apache 2.0 license (permissive)
 - AWS-maintained (reliable)
 - Works with our Kappa architecture
+
+This module provides two validators:
+- DeequValidator: Standalone validator with predefined MLB data rules (requires SPARK_VERSION env)
+- DataQualityValidator: Schema-driven validator integrated with mapping config
+
+Note: Both validators require SPARK_VERSION environment variable to be set.
+Set SPARK_VERSION=3.5 before importing these validators.
 """
+
+# PyDeequ requires SPARK_VERSION environment variable - lazy import all validators
+try:
+    from .validator import DataQualityValidator, ValidationResult
+    from .deequ_validator import DeequValidationResult, DeequValidator, ValidationStatus
+except RuntimeError:
+    # PyDeequ not configured - will be available when SPARK_VERSION is set
+    DataQualityValidator = None  # type: ignore
+    ValidationResult = None  # type: ignore
+    DeequValidator = None  # type: ignore
+    DeequValidationResult = None  # type: ignore
+    ValidationStatus = None  # type: ignore
+
+__all__ = [
+    "DeequValidator",
+    "DeequValidationResult",
+    "ValidationStatus",
+    "DataQualityValidator",
+    "ValidationResult",
+]

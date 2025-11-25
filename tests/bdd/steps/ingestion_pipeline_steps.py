@@ -422,6 +422,248 @@ def step_verify_game_count(context, count):
 # is defined in raw_ingestion_steps.py (uses RawLiveGameV1 model for actual raw table)
 
 
+@then("the following fields should be extracted correctly:")
+def step_verify_extracted_fields(context):
+    """Verify extracted fields match expected values from data table."""
+    row_id = context.result['row_id']
+
+    for row in context.table:
+        field = row["field"]
+        expected_value = row["value"]
+
+        # Query the field from the database
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT {field} FROM game.live_game_v1 WHERE id = {row_id}"
+        )
+        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
+        actual_value = rows[0][field]
+
+        # Convert expected value to appropriate type
+        if actual_value is None:
+            assert expected_value.lower() in ["null", "none"], \
+                f"Expected {field}={expected_value}, got NULL"
+        elif isinstance(actual_value, int):
+            expected_value = int(expected_value)
+            assert actual_value == expected_value, \
+                f"Expected {field}={expected_value}, got {actual_value}"
+        elif isinstance(actual_value, date):
+            expected_date = date.fromisoformat(expected_value)
+            assert actual_value == expected_date, \
+                f"Expected {field}={expected_value}, got {actual_value}"
+        else:
+            assert str(actual_value) == expected_value, \
+                f"Expected {field}={expected_value}, got {actual_value}"
+
+
+@then('the game_state should be one of "Final", "Live", or "Preview"')
+def step_verify_game_state(context):
+    """Verify game_state is one of the valid states."""
+    row_id = context.result['row_id']
+    rows = query_table(
+        context.storage_backend,
+        f"SELECT game_state FROM game.live_game_v1 WHERE id = {row_id}"
+    )
+    assert len(rows) == 1
+    game_state = rows[0]["game_state"]
+    valid_states = ["Final", "Live", "Preview"]
+    assert game_state in valid_states, \
+        f"Expected game_state to be one of {valid_states}, got '{game_state}'"
+
+
+@then("the JSONB data should contain required top-level fields:")
+def step_verify_jsonb_top_level_fields(context):
+    """Verify JSONB data contains required top-level fields."""
+    data = context.result['data']
+
+    for row in context.table:
+        field = row["field"]
+        assert field in data, f"Missing required top-level field: {field}"
+
+
+@then("the gameData should contain:")
+def step_verify_game_data_fields(context):
+    """Verify gameData section contains required fields."""
+    data = context.result['data']
+    assert "gameData" in data, "Missing gameData in response"
+
+    game_data = data["gameData"]
+    for row in context.table:
+        field = row["field"]
+        assert field in game_data, f"Missing required gameData field: {field}"
+
+
+@then("the liveData should contain plays or linescore data")
+def step_verify_live_data_content(context):
+    """Verify liveData contains plays or linescore data."""
+    data = context.result['data']
+    assert "liveData" in data, "Missing liveData in response"
+
+    live_data = data["liveData"]
+    has_plays = "plays" in live_data
+    has_linescore = "linescore" in live_data
+
+    assert has_plays or has_linescore, \
+        "liveData must contain either 'plays' or 'linescore' data"
+
+
+@then("the gameData teams should have home and away teams")
+def step_verify_home_away_teams(context):
+    """Verify gameData.teams has home and away teams."""
+    data = context.result['data']
+    assert "gameData" in data, "Missing gameData in response"
+    assert "teams" in data["gameData"], "Missing teams in gameData"
+
+    teams = data["gameData"]["teams"]
+    assert "home" in teams, "Missing 'home' team in gameData.teams"
+    assert "away" in teams, "Missing 'away' team in gameData.teams"
+
+
+@then("each team should have an ID")
+def step_verify_team_ids_exist(context):
+    """Verify both home and away teams have ID fields."""
+    data = context.result['data']
+    teams = data["gameData"]["teams"]
+
+    assert "id" in teams["home"], "Missing 'id' field in home team"
+    assert "id" in teams["away"], "Missing 'id' field in away team"
+
+
+@then("the home team ID should not equal the away team ID")
+def step_verify_different_team_ids(context):
+    """Verify home and away team IDs are different."""
+    data = context.result['data']
+    teams = data["gameData"]["teams"]
+
+    home_id = teams["home"]["id"]
+    away_id = teams["away"]["id"]
+
+    assert home_id != away_id, \
+        f"Home team ID ({home_id}) should not equal away team ID ({away_id})"
+
+
+@then("the gameData datetime should have an officialDate field")
+def step_verify_official_date_exists(context):
+    """Verify gameData.datetime contains officialDate field."""
+    data = context.result['data']
+    assert "gameData" in data, "Missing gameData in response"
+    assert "datetime" in data["gameData"], "Missing datetime in gameData"
+
+    datetime_data = data["gameData"]["datetime"]
+    assert "officialDate" in datetime_data, \
+        "Missing 'officialDate' field in gameData.datetime"
+
+
+@then("the officialDate should be in YYYY-MM-DD format")
+def step_verify_official_date_format(context):
+    """Verify officialDate is in YYYY-MM-DD format."""
+    data = context.result['data']
+    official_date = data["gameData"]["datetime"]["officialDate"]
+
+    date_pattern = r"^\d{4}-\d{2}-\d{2}$"
+    assert re.match(date_pattern, official_date), \
+        f"officialDate '{official_date}' is not in YYYY-MM-DD format"
+
+    # Also validate it's a valid date
+    try:
+        date.fromisoformat(official_date)
+    except ValueError as e:
+        raise AssertionError(f"officialDate '{official_date}' is not a valid date") from e
+
+
+@then("the officialDate should match the extracted game_date")
+def step_verify_official_date_matches_game_date(context):
+    """Verify officialDate from JSONB matches game_date column."""
+    row_id = context.result['row_id']
+    data = context.result['data']
+
+    # Get officialDate from JSONB
+    official_date_str = data["gameData"]["datetime"]["officialDate"]
+    expected_date = date.fromisoformat(official_date_str)
+
+    # Get game_date from database
+    rows = query_table(
+        context.storage_backend,
+        f"SELECT game_date FROM game.live_game_v1 WHERE id = {row_id}"
+    )
+    assert len(rows) == 1
+    actual_date = rows[0]["game_date"]
+
+    assert actual_date == expected_date, \
+        f"game_date column ({actual_date}) does not match officialDate ({expected_date})"
+
+
+@then("both records should have the same game_pk")
+def step_verify_same_game_pk_multiple_records(context):
+    """Verify multiple records have the same game_pk."""
+    # This step is for tests with multiple ingestions (context.game_results)
+    if hasattr(context, "game_results") and len(context.game_results) >= 2:
+        # Query game_pk for all records
+        row_ids = [r["row_id"] for r in context.game_results]
+        placeholders = ",".join(str(rid) for rid in row_ids)
+
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT id, game_pk FROM game.live_game_v1 WHERE id IN ({placeholders})"
+        )
+
+        # All game_pk values should be the same
+        game_pks = [row["game_pk"] for row in rows]
+        assert len(set(game_pks)) == 1, \
+            f"Expected all records to have same game_pk, got: {game_pks}"
+    elif hasattr(context, "result") and hasattr(context, "result2"):
+        # Two separate results
+        row_id_1 = context.result["row_id"]
+        row_id_2 = context.result2["row_id"]
+
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT game_pk FROM game.live_game_v1 WHERE id IN ({row_id_1}, {row_id_2})"
+        )
+
+        assert len(rows) == 2
+        assert rows[0]["game_pk"] == rows[1]["game_pk"], \
+            f"Expected same game_pk, got {rows[0]['game_pk']} and {rows[1]['game_pk']}"
+
+
+@then("the game_pk field should be extracted from the response JSON")
+def step_verify_game_pk_extraction(context):
+    """Verify game_pk column matches gamePk from JSONB data."""
+    row_id = context.result['row_id']
+    data = context.result['data']
+
+    # Get gamePk from JSONB
+    expected_game_pk = data.get("gamePk")
+    assert expected_game_pk is not None, "Missing 'gamePk' in response JSON"
+
+    # Get game_pk from database
+    rows = query_table(
+        context.storage_backend,
+        f"SELECT game_pk FROM game.live_game_v1 WHERE id = {row_id}"
+    )
+    assert len(rows) == 1
+    actual_game_pk = rows[0]["game_pk"]
+
+    assert actual_game_pk == expected_game_pk, \
+        f"game_pk column ({actual_game_pk}) does not match gamePk from JSON ({expected_game_pk})"
+
+
+@then("the game_pk should equal {game_pk:d}")
+def step_verify_game_pk_value(context, game_pk):
+    """Verify game_pk column equals specified value."""
+    row_id = context.result['row_id']
+
+    rows = query_table(
+        context.storage_backend,
+        f"SELECT game_pk FROM game.live_game_v1 WHERE id = {row_id}"
+    )
+    assert len(rows) == 1
+    actual_game_pk = rows[0]["game_pk"]
+
+    assert actual_game_pk == game_pk, \
+        f"Expected game_pk={game_pk}, got {actual_game_pk}"
+
+
 # ============================================================================
 # Common Validation Steps
 # ============================================================================
@@ -565,9 +807,11 @@ def step_verify_request_param_value(context, param_check):
 
     request_params = rows[0]["request_params"]
 
-    # Parse the param_check (e.g., "sportId=1" or "date=2024-07-04")
+    # Parse the param_check (e.g., "sportId=1" or "date="2024-07-04"")
     if "=" in param_check:
         key, expected_value = param_check.split("=", 1)
+        # Strip quotes from expected value if present
+        expected_value = expected_value.strip('"').strip("'")
         assert key in request_params, f"Parameter '{key}' not found in request_params"
 
         actual_value = request_params[key]
@@ -808,3 +1052,252 @@ def step_verify_partition_key(context, field_name):
     )
     assert partition_field is not None, f"Field {field_name} not found in schema"
     assert partition_field.is_partition_key is True
+
+
+# ============================================================================
+# Schedule Data Structure Validation Steps
+# ============================================================================
+
+@then("the schedule data should contain required fields:")
+def step_verify_schedule_required_fields(context):
+    """Verify schedule data contains required fields from data table."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    for row in context.table:
+        field = row["field"]
+        assert field in data, f"Missing required field: {field}"
+
+
+@then('the JSONB data should contain a "dates" array')
+def step_verify_dates_array_schedule(context):
+    """Verify the JSONB data contains a 'dates' array."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "dates" in data, "Missing 'dates' key in data"
+    assert isinstance(data["dates"], list), "dates is not a list"
+
+
+@then("the totalGames should be greater than or equal to 0")
+def step_verify_total_games_gte_zero(context):
+    """Verify totalGames is >= 0."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "totalGames" in data, "Missing 'totalGames' key in data"
+    assert data["totalGames"] >= 0, f"totalGames is negative: {data['totalGames']}"
+
+
+@then("the totalGames should be 0")
+def step_verify_total_games_is_zero(context):
+    """Verify totalGames is 0."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "totalGames" in data, "Missing 'totalGames' key in data"
+    assert data["totalGames"] == 0, f"Expected totalGames to be 0, got {data['totalGames']}"
+
+
+@then("the dates array may be empty")
+def step_verify_dates_array_may_be_empty(context):
+    """Verify that empty dates array is acceptable."""
+    # This is a permissive check - just verify structure exists
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+    assert "dates" in data, "Missing 'dates' key in data"
+    # No assertion on length - empty is OK
+
+
+@then("if totalGames is greater than 0, the dates array should have games")
+def step_verify_dates_has_games_if_total_games_gt_zero(context):
+    """Verify dates array has games if totalGames > 0."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "totalGames" in data, "Missing 'totalGames' key in data"
+
+    if data["totalGames"] > 0:
+        assert "dates" in data, "Missing 'dates' key when totalGames > 0"
+        assert len(data["dates"]) > 0, "dates array is empty but totalGames > 0"
+
+
+@then('the date in the dates array should match "{expected_date}"')
+def step_verify_dates_array_contains_date(context, expected_date):
+    """Verify the dates array contains an entry matching the specified date."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "dates" in data, "Missing 'dates' key in data"
+    dates = data["dates"]
+
+    # Find date entry matching expected_date
+    found = False
+    for date_entry in dates:
+        if "date" in date_entry and date_entry["date"] == expected_date:
+            found = True
+            break
+
+    assert found, f"Date {expected_date} not found in dates array"
+
+
+@then("the schedule_date should be a date type in PostgreSQL")
+def step_verify_schedule_date_type(context):
+    """Verify schedule_date column is a date type in PostgreSQL."""
+    rows = query_table(
+        context.storage_backend,
+        """
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'schedule'
+          AND table_name = 'schedule'
+          AND column_name = 'schedule_date'
+        """
+    )
+
+    assert len(rows) == 1, "schedule_date column not found in schedule.schedule table"
+    assert rows[0]["data_type"] == "date", \
+        f"Expected schedule_date to be 'date' type, got '{rows[0]['data_type']}'"
+
+
+# ============================================================================
+# Season Data Structure Validation Steps
+# ============================================================================
+
+@then("the season data should contain required fields:")
+def step_verify_season_required_fields(context):
+    """Verify season data contains required fields from data table.
+
+    Season data has structure: {"seasons": [{"seasonId": "2024", ...}, ...]}
+    We check the first season in the array.
+    """
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    # Season fields are nested under seasons array
+    assert "seasons" in data, "Missing 'seasons' key in data"
+    assert len(data["seasons"]) > 0, "Seasons array is empty"
+    season = data["seasons"][0]
+
+    for row in context.table:
+        field = row["field"]
+        assert field in season, f"Missing required field: {field}"
+
+
+@then('the JSONB data should contain a "seasons" array')
+def step_verify_seasons_array(context):
+    """Verify the JSONB data contains a 'seasons' array."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "seasons" in data, "Missing 'seasons' key in data"
+    assert isinstance(data["seasons"], list), "seasons is not a list"
+
+
+@then("the seasons array should have at least 1 season")
+def step_verify_seasons_array_not_empty(context):
+    """Verify the seasons array has at least 1 season."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "seasons" in data, "Missing 'seasons' key in data"
+    assert len(data["seasons"]) >= 1, f"Expected at least 1 season, got {len(data['seasons'])}"
+
+
+@then("each season should have a seasonId")
+def step_verify_each_season_has_id(context):
+    """Verify each season in the seasons array has a seasonId."""
+    assert "data" in context.result, "result does not contain 'data' key"
+    data = context.result["data"]
+
+    assert "seasons" in data, "Missing 'seasons' key in data"
+    seasons = data["seasons"]
+
+    for idx, season in enumerate(seasons):
+        assert "seasonId" in season, f"Season at index {idx} is missing 'seasonId'"
+
+
+@then("the season record should have:")
+def step_verify_season_record_fields(context):
+    """Verify season record in database has specified field values."""
+    assert "row_id" in context.result, "result does not contain 'row_id'"
+
+    for row in context.table:
+        field = row["field"]
+        expected_value = row["value"]
+
+        # Query the field from the database
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT {field} FROM season.seasons WHERE id = {context.result['row_id']}"
+        )
+
+        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
+        actual_value = rows[0][field]
+
+        # Convert expected_value to appropriate type
+        if expected_value.isdigit():
+            expected_value = int(expected_value)
+
+        assert actual_value == expected_value, \
+            f"Expected {field}={expected_value}, got {field}={actual_value}"
+
+
+@then("the schedule record should have:")
+def step_verify_schedule_record_fields(context):
+    """Verify schedule record in database has specified field values."""
+    assert "row_id" in context.result, "result does not contain 'row_id'"
+
+    for row in context.table:
+        field = row["field"]
+        expected_value = row["value"]
+
+        # Query the field from the database
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT {field} FROM schedule.schedule WHERE id = {context.result['row_id']}"
+        )
+
+        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
+        actual_value = rows[0][field]
+
+        # Convert expected_value to appropriate type
+        if expected_value.isdigit():
+            expected_value = int(expected_value)
+        elif expected_value.lower() == "true":
+            expected_value = True
+        elif expected_value.lower() == "false":
+            expected_value = False
+
+        assert actual_value == expected_value, \
+            f"Expected {field}={expected_value}, got {field}={actual_value}"
+
+
+@then("the game record should have:")
+def step_verify_game_record_fields(context):
+    """Verify game record in database has specified field values."""
+    assert "row_id" in context.result, "result does not contain 'row_id'"
+
+    for row in context.table:
+        field = row["field"]
+        expected_value = row["value"]
+
+        # Query the field from the database
+        rows = query_table(
+            context.storage_backend,
+            f"SELECT {field} FROM game.live_game_v1 WHERE id = {context.result['row_id']}"
+        )
+
+        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
+        actual_value = rows[0][field]
+
+        # Convert expected_value to appropriate type
+        if expected_value.isdigit():
+            expected_value = int(expected_value)
+        elif expected_value.lower() == "true":
+            expected_value = True
+        elif expected_value.lower() == "false":
+            expected_value = False
+
+        assert actual_value == expected_value, \
+            f"Expected {field}={expected_value}, got {field}={actual_value}"
