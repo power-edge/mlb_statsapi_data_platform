@@ -1,5 +1,5 @@
 """Schedule data transformations."""
 
-from .schedule import ScheduleTransformation
+from .schedule import ScheduleTransform
 
-__all__ = ["ScheduleTransformation"]
+__all__ = ["ScheduleTransform"]

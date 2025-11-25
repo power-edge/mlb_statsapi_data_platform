@@ -1,10 +1,9 @@
 """Game transformation modules.
 
 Contains transformation classes for all game-related endpoints:
-- LiveGameTransformation: Game.liveGameV1() → normalized tables
-- GameLiveV1Transformation: Legacy comprehensive transformation (17 tables)
+- LiveGameTransform: Game.liveGameV1() → 16 normalized tables
 """
 
-from .live_game import LiveGameTransformation
+from .live_game import LiveGameTransform
 
-__all__ = ["LiveGameTransformation"]
+__all__ = ["LiveGameTransform"]

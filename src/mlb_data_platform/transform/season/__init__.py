@@ -1,5 +1,5 @@
 """Season data transformations."""
 
-from .seasons import SeasonTransformation
+from .seasons import SeasonTransform
 
-__all__ = ["SeasonTransformation"]
+__all__ = ["SeasonTransform"]
