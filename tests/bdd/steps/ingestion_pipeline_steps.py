@@ -238,8 +238,8 @@ def step_create_schedule_client(context):
 def step_ingest_schedule_data(context, schedule_date, sport_id):
     """Ingest schedule data for the given date and sport ID."""
     # Update job config with the date
-    context.schedule_job_config.source["parameters"]["date"] = schedule_date
-    context.schedule_job_config.source["parameters"]["sportId"] = sport_id
+    context.schedule_job_config.source.parameters["date"] = schedule_date
+    context.schedule_job_config.source.parameters["sportId"] = sport_id
 
     context.schedule_client = MLBStatsAPIClient(
         context.schedule_job_config,
@@ -252,7 +252,7 @@ def step_ingest_schedule_data(context, schedule_date, sport_id):
 @when('I fetch schedule data for date "{schedule_date}" without saving')
 def step_fetch_schedule_data_dry_run(context, schedule_date):
     """Fetch schedule data without saving to database."""
-    context.schedule_job_config.source["parameters"]["date"] = schedule_date
+    context.schedule_job_config.source.parameters["date"] = schedule_date
 
     context.schedule_client = MLBStatsAPIClient(
         context.schedule_job_config,
@@ -266,7 +266,7 @@ def step_ingest_schedule_no_games(context):
     """Ingest schedule data for a date with no games."""
     # Use today's date which likely has no games in stub data
     today = datetime.now().strftime("%Y-%m-%d")
-    context.schedule_job_config.source["parameters"]["date"] = today
+    context.schedule_job_config.source.parameters["date"] = today
 
     context.schedule_client = MLBStatsAPIClient(
         context.schedule_job_config,
@@ -347,7 +347,7 @@ def step_create_game_client(context):
 @when("I ingest live game data for game_pk {game_pk:d}")
 def step_ingest_game_data(context, game_pk):
     """Ingest live game data for the given game_pk."""
-    context.game_job_config.source["parameters"]["game_pk"] = game_pk
+    context.game_job_config.source.parameters["game_pk"] = game_pk
 
     context.game_client = MLBStatsAPIClient(
         context.game_job_config,
@@ -366,7 +366,7 @@ def step_ingest_game_data_at_timestamp(context, game_pk, timestamp):
         context.game_ingestion_count = 0
         context.game_results = []
 
-    context.game_job_config.source["parameters"]["game_pk"] = game_pk
+    context.game_job_config.source.parameters["game_pk"] = game_pk
     context.game_client = MLBStatsAPIClient(
         context.game_job_config,
         stub_mode=context.stub_mode
@@ -388,7 +388,7 @@ def step_ingest_same_game_at_timestamp(context, timestamp):
 @when("I fetch game data for game_pk {game_pk:d} without saving")
 def step_fetch_game_data_dry_run(context, game_pk):
     """Fetch game data without saving to database."""
-    context.game_job_config.source["parameters"]["game_pk"] = game_pk
+    context.game_job_config.source.parameters["game_pk"] = game_pk
 
     context.game_client = MLBStatsAPIClient(
         context.game_job_config,
