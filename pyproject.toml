@@ -32,8 +32,8 @@ classifiers = [
 
 dependencies = [
     "pymlb-statsapi>=1.0.0",
-    "pyspark>=3.5.0",
-    "delta-spark>=3.0.0",
+    "pyspark>=3.5.0,<4.0",  # PyDeequ requires Spark 3.x
+    "delta-spark>=3.0.0,<4.0",  # Match PySpark version
     "pydeequ>=1.2.0",  # AWS data quality library for PySpark
     "psycopg[binary]>=3.1.0",
     "psycopg-pool>=3.1.0",

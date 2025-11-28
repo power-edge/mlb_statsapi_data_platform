@@ -41,6 +41,7 @@ RUN mkdir -p /opt/spark/jars && \
     -o /opt/spark/jars/postgresql-42.6.0.jar
 
 # Set Spark environment variables
+ENV SPARK_VERSION=3.5
 ENV SPARK_HOME=/usr/local/lib/python3.11/dist-packages/pyspark
 ENV PYTHONPATH=/app/src:${PYTHONPATH}
 
