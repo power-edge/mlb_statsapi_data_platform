@@ -2,13 +2,19 @@
 
 These tests validate the timestamp-based defensive MERGE operations using
 in-memory DataFrames and stub data.
+
+Delta Lake tests require:
+- Java 17+ runtime
+- Run via Docker for full environment:
+    docker compose --profile spark run --rm spark pytest tests/unit/test_upsert.py
 """
 
+import os
+import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import List
 
 import pytest
-from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     LongType,
     StringType,
@@ -19,14 +25,48 @@ from pyspark.sql.types import (
 
 from mlb_data_platform.transform.upsert import (
     UpsertMetrics,
-    defensive_upsert_delta,
     _build_postgres_merge_sql,
 )
 
 
+def _check_java_version():
+    """Check if Java 17+ is available."""
+    try:
+        result = subprocess.run(
+            ["java", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        # Java version appears in stderr
+        version_output = result.stderr
+        # Look for version pattern like "17.0" or "21.0"
+        import re
+
+        match = re.search(r'"(\d+)\.', version_output)
+        if match:
+            major_version = int(match.group(1))
+            return major_version >= 17
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+# Check Java availability once at module load
+_JAVA_17_AVAILABLE = _check_java_version()
+
+
 @pytest.fixture(scope="module")
 def spark():
-    """Create SparkSession for testing."""
+    """Create SparkSession for testing.
+
+    Skips if Java 17+ is not available (required for PySpark 3.5+).
+    """
+    if not _JAVA_17_AVAILABLE:
+        pytest.skip("Java 17+ required for Delta Lake tests (run via Docker Spark container)")
+
+    from pyspark.sql import SparkSession
+
     spark = (
         SparkSession.builder.appName("test-upsert")
         .master("local[2]")
@@ -146,6 +186,8 @@ def test_build_postgres_merge_sql_composite_key():
 
 def test_defensive_upsert_delta_new_table(spark, sample_schema, tmp_path):
     """Test defensive upsert to new Delta table (no existing data)."""
+    from mlb_data_platform.transform.upsert import defensive_upsert_delta
+
     # Create source DataFrame
     now = datetime.now(timezone.utc)
     source_data = [
@@ -179,6 +221,8 @@ def test_defensive_upsert_delta_new_table(spark, sample_schema, tmp_path):
 
 def test_defensive_upsert_delta_update_with_newer_data(spark, sample_schema, tmp_path):
     """Test defensive upsert updates existing rows when source is newer."""
+    from mlb_data_platform.transform.upsert import defensive_upsert_delta
+
     # Create initial target data (older timestamp)
     old_time = datetime(2024, 10, 25, 10, 0, 0, tzinfo=timezone.utc)
     target_data = [
@@ -226,6 +270,8 @@ def test_defensive_upsert_delta_update_with_newer_data(spark, sample_schema, tmp
 
 def test_defensive_upsert_delta_skip_with_older_data(spark, sample_schema, tmp_path):
     """Test defensive upsert skips updates when source is older."""
+    from mlb_data_platform.transform.upsert import defensive_upsert_delta
+
     # Create initial target data (newer timestamp)
     new_time = datetime(2024, 10, 25, 12, 0, 0, tzinfo=timezone.utc)
     target_data = [
@@ -270,6 +316,8 @@ def test_defensive_upsert_delta_skip_with_older_data(spark, sample_schema, tmp_p
 
 def test_defensive_upsert_delta_idempotency(spark, sample_schema, tmp_path):
     """Test defensive upsert is idempotent (running twice produces same result)."""
+    from mlb_data_platform.transform.upsert import defensive_upsert_delta
+
     # Create source data
     now = datetime.now(timezone.utc)
     source_data = [
@@ -313,6 +361,8 @@ def test_defensive_upsert_delta_idempotency(spark, sample_schema, tmp_path):
 
 def test_defensive_upsert_delta_composite_key(spark, tmp_path):
     """Test defensive upsert with composite primary key."""
+    from mlb_data_platform.transform.upsert import defensive_upsert_delta
+
     # Create schema for plays table
     schema = StructType(
         [

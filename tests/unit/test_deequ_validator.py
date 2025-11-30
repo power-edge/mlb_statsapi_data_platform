@@ -1,8 +1,25 @@
-"""Unit tests for DeequValidator."""
+"""Unit tests for DeequValidator.
 
+These tests require:
+- SPARK_VERSION environment variable (e.g., "3.5")
+- Java 17+ runtime
+
+Run via Docker for full environment:
+    docker compose --profile spark run --rm spark pytest tests/unit/test_deequ_validator.py
+"""
+
+import os
 from datetime import datetime
 
 import pytest
+
+# Skip entire module if SPARK_VERSION not set (PyDeequ requirement)
+if os.environ.get("SPARK_VERSION") is None:
+    pytest.skip(
+        "SPARK_VERSION env required for PyDeequ (run tests via Docker Spark container)",
+        allow_module_level=True,
+    )
+
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     IntegerType,
