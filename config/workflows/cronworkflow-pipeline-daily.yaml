@@ -1,0 +1,100 @@
+# CronWorkflow for Daily Pipeline using mlb-etl pipeline CLI
+# Simplified orchestration - fetches schedule + games for current date
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: mlb-pipeline-daily
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: pipeline
+    schedule: daily
+spec:
+  # Schedule: 6 AM UTC (midnight/1 AM US Eastern/Pacific)
+  # Games typically end by 1 AM ET, so we capture previous day's final data
+  schedule: "0 6 * * *"
+  timezone: "America/New_York"
+
+  # Skip if previous run is still running
+  concurrencyPolicy: "Forbid"
+
+  # History retention
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+
+  # Start automatically
+  suspend: false
+
+  workflowSpec:
+    entrypoint: daily-pipeline
+
+    arguments:
+      parameters:
+        - name: sport-id
+          value: "1"  # MLB
+        - name: enrich
+          value: "false"  # Skip enrichment for faster daily runs
+
+    serviceAccountName: mlb-data-platform-sa
+
+    templates:
+      - name: daily-pipeline
+        container:
+          image: mlb-data-platform/ingestion:latest
+          command: [uv, run, mlb-etl, pipeline]
+          args:
+            - daily
+            - --save
+            - --db-host
+            - $(POSTGRES_HOST)
+            - --db-port
+            - "5432"
+            - --db-name
+            - $(POSTGRES_DB)
+            - --db-user
+            - $(POSTGRES_USER)
+            - --db-password
+            - $(POSTGRES_PASSWORD)
+            - --sport-id
+            - "{{workflow.parameters.sport-id}}"
+            - --no-enrich
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              value: mlb_games
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+
+    # Retry on failure
+    retryStrategy:
+      limit: 2
+      retryPolicy: "OnFailure"
+      backoff:
+        duration: "60s"
+        factor: 2
+        maxDuration: "10m"
+
+    # TTL cleanup
+    ttlStrategy:
+      secondsAfterCompletion: 86400   # 24 hours
+      secondsAfterSuccess: 86400
+      secondsAfterFailure: 259200     # 3 days for debugging

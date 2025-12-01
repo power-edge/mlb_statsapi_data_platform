@@ -1,0 +1,93 @@
+# CronWorkflow for Live Game Polling
+# Runs every 30 minutes during MLB game hours (noon to 2 AM ET)
+# Only active during baseball season (March-November)
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: mlb-pipeline-live
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: pipeline
+    schedule: live
+spec:
+  # Schedule: Every 30 minutes from noon to 2 AM ET (16:00-06:00 UTC)
+  # This covers most MLB game times
+  schedule: "*/30 16-23,0-6 * 3-11 *"  # Minutes 0,30 of hours 16-23 and 0-6, March-November
+  timezone: "UTC"
+
+  # Allow concurrent runs (games may overlap)
+  concurrencyPolicy: "Allow"
+
+  # History retention
+  successfulJobsHistoryLimit: 24  # Keep more for live monitoring
+  failedJobsHistoryLimit: 5
+
+  # Start automatically
+  suspend: false
+
+  workflowSpec:
+    entrypoint: live-pipeline
+
+    arguments:
+      parameters:
+        - name: sport-id
+          value: "1"
+
+    serviceAccountName: mlb-data-platform-sa
+
+    templates:
+      - name: live-pipeline
+        container:
+          image: mlb-data-platform/ingestion:latest
+          command: [uv, run, mlb-etl, pipeline]
+          args:
+            - daily
+            - --save
+            - --db-host
+            - $(POSTGRES_HOST)
+            - --db-port
+            - "5432"
+            - --db-name
+            - $(POSTGRES_DB)
+            - --db-user
+            - $(POSTGRES_USER)
+            - --db-password
+            - $(POSTGRES_PASSWORD)
+            - --sport-id
+            - "{{workflow.parameters.sport-id}}"
+            - --no-enrich  # Skip enrichment for speed
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              value: mlb_games
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+    # Quick timeout for live polling
+    activeDeadlineSeconds: 1800  # 30 minutes max
+
+    # TTL cleanup - shorter retention for live polling
+    ttlStrategy:
+      secondsAfterCompletion: 3600   # 1 hour
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 7200      # 2 hours for debugging

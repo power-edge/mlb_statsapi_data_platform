@@ -1,0 +1,8 @@
+# Namespace for MLB Data Platform
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    environment: production
