@@ -576,7 +576,7 @@ def pipeline(
     game_pks: str = typer.Option("", "--game-pks", "-g", help="Comma-separated game PKs"),
     sport_id: int = typer.Option(1, "--sport-id", help="Sport ID (1=MLB)"),
     save: bool = typer.Option(False, "--save", help="Save data to PostgreSQL"),
-    upsert: bool = typer.Option(True, "--upsert/--insert", help="Use upsert (default) or insert"),
+    upsert: bool = typer.Option(False, "--upsert/--insert", help="Use upsert or insert (default)"),
     enrich: bool = typer.Option(True, "--enrich/--no-enrich", help="Fetch player/team enrichment"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be fetched"),
     db_host: str = typer.Option("localhost", "--db-host", help="PostgreSQL host"),
@@ -725,7 +725,7 @@ def pipeline(
             if current_season:
                 console.print(f"\n[bold]Current Season:[/bold]")
                 console.print(f"  Season ID: [cyan]{current_season.season_id}[/cyan]")
-                console.print(f"  Regular Season: {current_season.regular_start} to {current_season.regular_end}")
+                console.print(f"  Regular Season: {current_season.regular_season_start} to {current_season.regular_season_end}")
                 if current_season.spring_start:
                     console.print(f"  Spring Training: {current_season.spring_start} to {current_season.spring_end}")
 

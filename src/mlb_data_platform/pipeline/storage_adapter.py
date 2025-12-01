@@ -40,7 +40,7 @@ class StorageAdapter:
     def __init__(
         self,
         backend: PostgresStorageBackend,
-        upsert: bool = True,
+        upsert: bool = False,  # Default to INSERT - existing schema lacks upsert-friendly constraints
         partition_date: date | None = None,
     ):
         """Initialize storage adapter.
@@ -130,6 +130,12 @@ class StorageAdapter:
             logger.error(f"Failed to store data in {table_name}: {e}")
             return None
 
+    # Special table name mappings where API method doesn't match table name
+    TABLE_NAME_OVERRIDES = {
+        ("game", "liveTimestampv11"): "game.live_game_timestamps",
+        ("game", "liveGameDiffPatchV1"): "game.live_game_v1",  # Diffs go to same table
+    }
+
     def _get_table_name(self, endpoint: str, method: str) -> str:
         """Convert endpoint/method to PostgreSQL table name.
 
@@ -140,6 +146,11 @@ class StorageAdapter:
         Returns:
             Full table name (e.g., "game.live_game_v1")
         """
+        # Check for special mappings first
+        key = (endpoint.lower(), method)
+        if key in self.TABLE_NAME_OVERRIDES:
+            return self.TABLE_NAME_OVERRIDES[key]
+
         schema_name = endpoint.lower()
         table_name = self._method_to_snake_case(method)
         return f"{schema_name}.{table_name}"
@@ -252,7 +263,7 @@ def create_storage_callback(
     database: str = "mlb_games",
     user: str = "mlb_admin",
     password: str = "mlb_admin_password",
-    upsert: bool = True,
+    upsert: bool = False,  # Default to INSERT - existing schema lacks upsert-friendly constraints
 ) -> tuple[StorageAdapter, PostgresStorageBackend]:
     """Create storage adapter with backend for pipeline use.
 

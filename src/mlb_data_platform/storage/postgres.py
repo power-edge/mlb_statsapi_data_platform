@@ -354,17 +354,17 @@ class PostgresStorageBackend:
     def _ensure_partition_exists(self, table_name: str, partition_date: date) -> None:
         """Ensure partition exists for given date.
 
+        Checks for yearly partitions first (e.g., schedule_2024),
+        then monthly (e.g., schedule_2024_10).
+
         Args:
             table_name: Parent table name
             partition_date: Date to check partition for
         """
-        # Generate partition name (e.g., schedule_schedule_2024_11)
         schema, table = table_name.split(".")
         year = partition_date.year
-        month = partition_date.month
-        partition_name = f"{schema}.{table}_{year}_{month:02d}"
 
-        # Check if partition exists
+        # Check if yearly partition exists first (common pattern)
         check_sql = """
             SELECT EXISTS (
                 SELECT 1
@@ -376,12 +376,22 @@ class PostgresStorageBackend:
 
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(check_sql, (schema, f"{table}_{year}_{month:02d}"))
-                exists = cur.fetchone()["exists"]
+                # Check yearly partition first
+                cur.execute(check_sql, (schema, f"{table}_{year}"))
+                yearly_exists = cur.fetchone()["exists"]
 
-                if not exists:
-                    # Create partition
-                    logger.info(f"Creating partition {partition_name} for {partition_date}")
+                if yearly_exists:
+                    # Yearly partition exists, no need to create monthly
+                    return
+
+                # Check monthly partition
+                month = partition_date.month
+                cur.execute(check_sql, (schema, f"{table}_{year}_{month:02d}"))
+                monthly_exists = cur.fetchone()["exists"]
+
+                if not monthly_exists:
+                    # Try to create monthly partition
+                    logger.info(f"Creating partition {table}_{year}_{month:02d} for {partition_date}")
                     self._create_partition(table_name, partition_date)
 
     def _create_partition(self, table_name: str, partition_date: date) -> None:

@@ -56,7 +56,7 @@ class PipelineConfig:
     enrich_teams: bool = True
 
     # Backfill settings
-    backfill_timestamps: bool = True  # Fetch all timestamps for completed games
+    backfill_timestamps: bool = False  # Disabled - timestamps table has different schema
 
 
 @dataclass

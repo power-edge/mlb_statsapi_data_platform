@@ -55,7 +55,24 @@ class GameInfo:
     abstract_game_state: str | None = None
     home_team_id: int | None = None
     away_team_id: int | None = None
+    home_team_name: str | None = None
+    away_team_name: str | None = None
     venue_id: int | None = None
+
+    @property
+    def status(self) -> str:
+        """Get display status string."""
+        return self.detailed_state or self.abstract_game_state or self.status_code or "Unknown"
+
+    @property
+    def home_team(self) -> str:
+        """Get home team display name."""
+        return self.home_team_name or str(self.home_team_id or "TBD")
+
+    @property
+    def away_team(self) -> str:
+        """Get away team display name."""
+        return self.away_team_name or str(self.away_team_id or "TBD")
 
     @property
     def is_live(self) -> bool:
@@ -164,6 +181,9 @@ class ScheduleExtractor:
             game_date = _parse_date(date_entry.get("date"))
 
             for game in date_entry.get("games", []):
+                home_team = game.get("teams", {}).get("home", {}).get("team", {})
+                away_team = game.get("teams", {}).get("away", {}).get("team", {})
+
                 game_info = GameInfo(
                     game_pk=game.get("gamePk"),
                     game_date=game_date,
@@ -171,8 +191,10 @@ class ScheduleExtractor:
                     status_code=game.get("status", {}).get("statusCode"),
                     detailed_state=game.get("status", {}).get("detailedState"),
                     abstract_game_state=game.get("status", {}).get("abstractGameState"),
-                    home_team_id=game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
-                    away_team_id=game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
+                    home_team_id=home_team.get("id"),
+                    away_team_id=away_team.get("id"),
+                    home_team_name=home_team.get("name"),
+                    away_team_name=away_team.get("name"),
                     venue_id=game.get("venue", {}).get("id"),
                 )
                 games.append(game_info)
