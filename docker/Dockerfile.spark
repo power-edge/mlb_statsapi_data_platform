@@ -1,7 +1,10 @@
 # Dockerfile for MLB Data Platform Spark Jobs
-# Includes Java 17, Python 3.11, PySpark 3.5, and all dependencies
+# Multi-stage build: base (production) + test (with pytest)
 
-FROM eclipse-temurin:17-jre-jammy
+# =============================================================================
+# BASE STAGE - Production image with Java 17, Python 3.11, PySpark 3.5
+# =============================================================================
+FROM eclipse-temurin:17-jre-jammy AS base
 
 # Install Python 3.11 and system dependencies
 RUN apt-get update && apt-get install -y \
@@ -24,7 +27,7 @@ RUN python3 -m pip install --upgrade pip && \
 # Set working directory
 WORKDIR /app
 
-# Copy project files
+# Copy project files (production only)
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY examples/ ./examples/
@@ -45,8 +48,20 @@ ENV SPARK_VERSION=3.5
 ENV SPARK_HOME=/usr/local/lib/python3.11/dist-packages/pyspark
 ENV PYTHONPATH=/app/src:${PYTHONPATH}
 
+# Pre-download Deequ and Delta JARs to avoid runtime Maven downloads
+# This creates the Ivy cache so tests start instantly
+RUN python3 -c "\
+from pyspark.sql import SparkSession; \
+spark = SparkSession.builder \
+    .appName('jar-download') \
+    .master('local[1]') \
+    .config('spark.jars.packages', 'com.amazon.deequ:deequ:2.0.7-spark-3.5,io.delta:delta-spark_2.12:3.3.2') \
+    .config('spark.sql.extensions', 'io.delta.sql.DeltaSparkSessionExtension') \
+    .getOrCreate(); \
+spark.stop(); \
+print('JARs downloaded successfully')"
+
 # Download Spark Kubernetes entrypoint scripts (required for Spark Operator)
-# These are from the official Apache Spark repository
 RUN mkdir -p /opt && \
     curl -L https://raw.githubusercontent.com/apache/spark/v3.5.0/resource-managers/kubernetes/docker/src/main/dockerfiles/spark/entrypoint.sh \
       -o /opt/entrypoint.sh && \
@@ -57,3 +72,21 @@ RUN mkdir -p /opt && \
 # Set Spark Kubernetes entrypoint
 WORKDIR /opt/spark/work-dir
 ENTRYPOINT ["/opt/entrypoint.sh"]
+
+
+# =============================================================================
+# TEST STAGE - Adds pytest and test files for running Spark/PyDeequ tests
+# =============================================================================
+FROM base AS test
+
+WORKDIR /app
+
+# Copy test files
+COPY tests/ ./tests/
+
+# Install test dependencies
+RUN uv pip install --system pytest pytest-cov pytest-asyncio
+
+# Override entrypoint for test runs
+ENTRYPOINT ["python3", "-m", "pytest"]
+CMD ["tests/unit/", "-v"]

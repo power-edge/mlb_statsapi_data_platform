@@ -422,7 +422,16 @@ class DeequValidator:
         errors = []
         warning_msgs = []
 
-        for check_name, check_result in check_results.items():
+        # PyDeequ returns check_results as a list of (Check, CheckResult) tuples
+        # Handle both dict and list formats for compatibility
+        if hasattr(check_results, "items"):
+            # Dict-like access
+            items = check_results.items()
+        else:
+            # List of tuples (check, check_result)
+            items = [(check.description(), result) for check, result in check_results]
+
+        for check_name, check_result in items:
             if check_result.status == CheckStatus.Success:
                 passed += 1
             elif check_result.status == CheckStatus.Warning:

@@ -25,10 +25,14 @@ from mlb_data_platform.transform.base import BaseTransformation
 from mlb_data_platform.transform.season import SeasonTransform
 from mlb_data_platform.transform.schedule import ScheduleTransform
 from mlb_data_platform.transform.game import LiveGameTransform
+from mlb_data_platform.transform.person import PersonTransform
+from mlb_data_platform.transform.team import TeamTransform
 
 __all__ = [
     "BaseTransformation",
     "SeasonTransform",
     "ScheduleTransform",
     "LiveGameTransform",
+    "PersonTransform",
+    "TeamTransform",
 ]

@@ -135,11 +135,12 @@ services:
     profiles:
       - tools
 
-  # Spark - Transformation Jobs
+  # Spark - Transformation Jobs (production)
   spark:
     build:
       context: .
       dockerfile: docker/Dockerfile.spark
+      target: base
     container_name: mlb-spark
     environment:
       POSTGRES_HOST: postgres
@@ -160,6 +161,32 @@ services:
       - mlb-network
     profiles:
       - spark
+
+  # Spark Test Runner - For running PyDeequ/Delta tests
+  spark-test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.spark
+      target: test
+    container_name: mlb-spark-test
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: mlb_games
+      POSTGRES_USER: mlb_admin
+      POSTGRES_PASSWORD: mlb_dev_password
+      SPARK_MASTER: local[*]
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mlb-network
+    profiles:
+      - test
 
 volumes:
   postgres_data:

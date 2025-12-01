@@ -38,11 +38,12 @@ from mlb_data_platform.quality.deequ_validator import (
 
 @pytest.fixture(scope="module")
 def spark():
-    """Create SparkSession for tests."""
+    """Create SparkSession for tests with PyDeequ JAR."""
     spark_session = (
         SparkSession.builder.appName("test_deequ_validator")
         .master("local[2]")
         .config("spark.sql.warehouse.dir", "/tmp/spark-warehouse")
+        .config("spark.jars.packages", "com.amazon.deequ:deequ:2.0.7-spark-3.5")
         .getOrCreate()
     )
     yield spark_session

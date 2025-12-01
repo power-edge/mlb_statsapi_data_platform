@@ -32,8 +32,8 @@ from ..base import BaseTransformation
 class SeasonTransform(BaseTransformation):
     """Season transformation using extraction registry pattern.
 
-    Transforms raw season.seasons JSONB data into normalized table:
-    - season.seasons_normalized - Flattened season metadata with dates
+    Transforms raw season.seasons_raw JSONB data into normalized table:
+    - season.seasons - Flattened season metadata with dates
     """
 
     def __init__(
@@ -52,7 +52,7 @@ class SeasonTransform(BaseTransformation):
             spark=spark,
             endpoint="season",
             method="seasons",
-            source_table="season.seasons",
+            source_table="season.seasons_raw",
             enable_quality_checks=enable_quality_checks,
         )
 
@@ -60,7 +60,7 @@ class SeasonTransform(BaseTransformation):
         self.register_extraction(
             name="seasons",
             method=self._extract_seasons,
-            target_table="season.seasons_normalized",
+            target_table="season.seasons",
         )
 
     def _apply_filters(
