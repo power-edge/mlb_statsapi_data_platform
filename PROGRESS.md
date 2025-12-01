@@ -45,10 +45,39 @@
 
 ### Commits
 - `3f43be9` - fix: resolve pipeline bugs for multi-game-type ingestion
+- `1ecf7e7` - docs: update PROGRESS.md with 2024 season backfill completion
+- `8db04fd` - feat: add K8s CronWorkflows and deployment resources
+- `55e8576` - test: add BDD tests for pipeline orchestration
+
+### K8s Deployment Resources Created
+```
+config/k8s/
+├── namespace.yaml           # mlb-data-platform namespace
+├── serviceaccount.yaml      # RBAC for Argo workflows
+├── secrets-template.yaml    # PostgreSQL credentials template
+└── README.md               # Deployment guide
+
+config/workflows/
+├── cronworkflow-pipeline-daily.yaml   # Daily at 6 AM UTC
+└── cronworkflow-pipeline-live.yaml    # Every 30 min during games
+```
+
+### BDD Tests Created
+- **Feature file**: `tests/bdd/features/pipeline_orchestration.feature` (25 scenarios)
+- **Step definitions**: `tests/bdd/steps/pipeline_orchestration_steps.py` (400+ lines)
+- Coverage: Daily pipeline, schedule extraction, game fetching, backfill, storage adapter, error handling
+
+### Session Summary
+✅ All 4 tasks completed:
+1. Fixed pipeline bugs and ran full 2024 season backfill (3,033 games)
+2. Created K8s CronWorkflows for daily and live game polling
+3. Added K8s deployment resources (namespace, RBAC, secrets)
+4. Created comprehensive BDD tests for pipeline orchestration
 
 ### Next Session Tasks
-1. 🟡 **Schedule jobs in K8s** - Deploy CronWorkflows for daily ingestion
-2. 🟡 **Create BDD tests** - Pipeline scenarios with behave
+1. 🟡 **Run BDD tests** - Verify all pipeline scenarios pass
+2. 🟡 **Add Argo Events** - Event-driven pipeline triggers
+3. 🟡 **Implement transforms** - PySpark jobs for normalized tables
 
 ---
 
