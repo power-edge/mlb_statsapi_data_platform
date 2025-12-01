@@ -24,17 +24,13 @@ from mlb_data_platform.pipeline.orchestrator import (
 )
 from mlb_data_platform.pipeline.storage_adapter import StorageAdapter
 
+# Import shared step: "a clean test database" - this import registers the step
+from tests.bdd.steps.common_steps import step_clean_test_database  # noqa: F401
+
 
 # =============================================================================
 # GIVEN STEPS
 # =============================================================================
-
-
-@given("a clean test database")
-def step_clean_database(context):
-    """Ensure test database is clean."""
-    # This would truncate tables in a real test
-    context.db_clean = True
 
 
 @given("a configured pipeline orchestrator")
@@ -382,9 +378,9 @@ def step_pipeline_success(context):
     assert len(context.result.errors) == 0
 
 
-@then("the schedule data should be saved to PostgreSQL")
+@then("the pipeline should report schedules fetched")
 def step_schedule_saved(context):
-    """Verify schedule data was saved."""
+    """Verify pipeline reported schedules were fetched."""
     assert context.result.schedules_fetched > 0
 
 
@@ -466,9 +462,9 @@ def step_games_either_status(context, status1, status2):
         assert game.abstract_game_state in [status1, status2]
 
 
-@then("the game data should be saved to PostgreSQL")
+@then("the game data should be returned from the API")
 def step_game_data_saved(context):
-    """Verify game data was saved."""
+    """Verify game data was returned from API."""
     assert context.game_data is not None
 
 

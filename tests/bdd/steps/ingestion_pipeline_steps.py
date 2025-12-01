@@ -8,95 +8,22 @@ This module implements steps for:
 Using the MLBStatsAPIClient with stub mode for deterministic testing.
 """
 
-import os
 import re
 from datetime import date, datetime
 
 from behave import given, when, then
-from psycopg.rows import dict_row
 
 from mlb_data_platform.ingestion.client import MLBStatsAPIClient
 from mlb_data_platform.ingestion.config import JobConfig, StubMode
 from mlb_data_platform.schema.models import SCHEMA_METADATA_REGISTRY
-from mlb_data_platform.storage.postgres import PostgresConfig, PostgresStorageBackend
 
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def get_db_config():
-    """Get database configuration for tests."""
-    return PostgresConfig(
-        host=os.getenv("TEST_DB_HOST", "localhost"),
-        port=int(os.getenv("TEST_DB_PORT", "5432")),
-        database=os.getenv("TEST_DB_NAME", "mlb_games"),
-        user=os.getenv("TEST_DB_USER", "mlb_admin"),
-        password=os.getenv("TEST_DB_PASSWORD", "mlb_dev_password"),
-    )
-
-
-def query_table(storage_backend: PostgresStorageBackend, sql: str) -> list[dict]:
-    """Execute query and return results as list of dicts."""
-    with storage_backend.pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(sql)
-            return cur.fetchall()
-
-
-def count_rows(storage_backend: PostgresStorageBackend, table: str) -> int:
-    """Count rows in a table."""
-    with storage_backend.pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*)::int as count FROM {table}")
-            result = cur.fetchone()
-            return result[0] if isinstance(result, tuple) else result["count"]
-
-
-# ============================================================================
-# Background Steps - Database Setup
-# ============================================================================
-
-@given("a clean test database")
-def step_clean_ingestion_database(context):
-    """Clean ingestion test database tables (raw and normalized).
-
-    This step cleans all test tables including:
-    - Raw JSONB storage (game.live_game_v1)
-    - Normalized tables (season.seasons, schedule.schedule)
-    """
-    db_config = get_db_config()
-    context.storage_backend = PostgresStorageBackend(db_config)
-
-    # Tables to clean - uses IF EXISTS to handle missing tables gracefully
-    tables_to_clean = [
-        "season.seasons",
-        "schedule.schedule",
-        "game.live_game_v1",           # Main raw storage (partitioned)
-        "game.live_game_v1_raw",       # Raw storage for ORM model
-        "game.live_game_metadata",     # Normalized tables
-        "game.live_game_players",
-        "game.live_game_plays",
-        "game.live_game_pitch_events",
-    ]
-
-    with context.storage_backend.pool.connection() as conn:
-        with conn.cursor() as cur:
-            for table in tables_to_clean:
-                # Use DO block to safely truncate if table exists
-                cur.execute(f"""
-                    DO $$
-                    BEGIN
-                        IF EXISTS (SELECT 1 FROM information_schema.tables
-                                   WHERE table_schema || '.' || table_name = '{table}') THEN
-                            EXECUTE 'TRUNCATE TABLE {table} CASCADE';
-                        END IF;
-                    END $$;
-                """)
-            conn.commit()
-
-    # Initialize context variables for raw ingestion tests
-    context.raw_games = []
+# Import shared utilities and steps from common_steps
+from tests.bdd.steps.common_steps import (
+    get_db_config,
+    query_table,
+    count_rows,
+    step_clean_test_database,  # noqa: F401 - registers the step with behave
+)
 
 
 # ============================================================================

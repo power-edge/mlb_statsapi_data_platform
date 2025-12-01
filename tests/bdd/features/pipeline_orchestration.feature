@@ -26,7 +26,7 @@ Feature: Pipeline Orchestration
   Scenario: Run daily pipeline for a specific date
     When I run the daily pipeline for date "2024-07-04"
     Then the pipeline should complete successfully
-    And the schedule data should be saved to PostgreSQL
+    And the pipeline should report schedules fetched
     And games should be fetched for that date
     And the pipeline result should show games fetched
 
@@ -79,7 +79,7 @@ Feature: Pipeline Orchestration
   @smoke
   Scenario: Fetch single game data
     When I fetch game data for game_pk 746385
-    Then the game data should be saved to PostgreSQL
+    Then the game data should be returned from the API
     And the game record should contain gameData
     And the game record should contain liveData
 
