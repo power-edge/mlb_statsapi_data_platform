@@ -34,7 +34,7 @@ class TestPipelineConfig:
         assert config.max_poll_duration_hours == 6
         assert config.enrich_players is True
         assert config.enrich_teams is True
-        assert config.backfill_timestamps is True
+        assert config.backfill_timestamps is False  # Disabled - timestamps table has different schema
 
     def test_custom_values(self):
         """Test custom configuration values."""

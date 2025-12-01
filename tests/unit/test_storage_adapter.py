@@ -52,9 +52,10 @@ class TestStorageAdapter:
         assert adapter._get_table_name("SCHEDULE", "schedule") == "schedule.schedule"
 
     def test_get_table_name_complex(self, adapter):
-        """Test complex method name conversion."""
-        assert adapter._get_table_name("game", "liveTimestampv11") == "game.live_timestampv11"
-        assert adapter._get_table_name("game", "liveGameDiffPatchV1") == "game.live_game_diff_patch_v1"
+        """Test complex method name conversion with TABLE_NAME_OVERRIDES."""
+        # These methods have special override mappings
+        assert adapter._get_table_name("game", "liveTimestampv11") == "game.live_game_timestamps"
+        assert adapter._get_table_name("game", "liveGameDiffPatchV1") == "game.live_game_v1"  # Diffs go to same table
 
     def test_method_to_snake_case(self, adapter):
         """Test _method_to_snake_case helper."""
@@ -312,23 +313,24 @@ class TestCreateStorageCallback:
                 password="testpass",
             )
 
-    def test_create_storage_callback_default_upsert(self):
-        """Test that factory creates adapter with upsert=True by default."""
+    def test_create_storage_callback_default_insert(self):
+        """Test that factory creates adapter with upsert=False by default (INSERT mode)."""
         with patch("mlb_data_platform.storage.create_postgres_backend") as mock_create:
             mock_create.return_value = MagicMock()
 
             adapter, _ = create_storage_callback()
 
-            assert adapter.upsert is True
+            # Default is INSERT mode (upsert=False) - existing schema lacks upsert-friendly constraints
+            assert adapter.upsert is False
 
-    def test_create_storage_callback_insert_mode(self):
-        """Test factory can create adapter with upsert=False."""
+    def test_create_storage_callback_upsert_mode(self):
+        """Test factory can create adapter with upsert=True."""
         with patch("mlb_data_platform.storage.create_postgres_backend") as mock_create:
             mock_create.return_value = MagicMock()
 
-            adapter, _ = create_storage_callback(upsert=False)
+            adapter, _ = create_storage_callback(upsert=True)
 
-            assert adapter.upsert is False
+            assert adapter.upsert is True
 
 
 class TestStorageAdapterIntegration:

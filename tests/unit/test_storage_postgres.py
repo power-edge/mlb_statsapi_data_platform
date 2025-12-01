@@ -616,10 +616,11 @@ class TestEnsurePartitionExists:
     """Test _ensure_partition_exists method."""
 
     @patch("mlb_data_platform.storage.postgres.ConnectionPool")
-    def test_partition_exists(self, mock_pool_class):
-        """Test when partition already exists."""
+    def test_partition_exists_yearly(self, mock_pool_class):
+        """Test when yearly partition already exists (checked first)."""
         # Setup mocks
         mock_cursor = MagicMock()
+        # Yearly partition exists, so we return early
         mock_cursor.fetchone.return_value = {"exists": True}
 
         mock_conn = MagicMock()
@@ -640,13 +641,14 @@ class TestEnsurePartitionExists:
         # Ensure partition
         backend._ensure_partition_exists("schedule.schedule", date(2024, 7, 4))
 
-        # Verify check query was executed
+        # Verify yearly check query was executed first
         assert mock_cursor.execute.called
         check_call = mock_cursor.execute.call_args_list[0]
         assert "pg_class" in check_call[0][0]
-        assert check_call[0][1] == ("schedule", "schedule_2024_07")
+        # Implementation checks yearly partition first (schedule_2024)
+        assert check_call[0][1] == ("schedule", "schedule_2024")
 
-        # Verify partition creation was NOT called
+        # Verify partition creation was NOT called (yearly exists)
         backend._create_partition.assert_not_called()
 
     @patch("mlb_data_platform.storage.postgres.ConnectionPool")
