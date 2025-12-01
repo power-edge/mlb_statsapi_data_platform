@@ -67,6 +67,41 @@ This ensures:
 - **Live coverage**: Frequent updates during active games
 - **Timestamp capture**: Multiple snapshots per game for historical replay
 
+### Live Game Poller Deployment (`mlb-live-game-poller`)
+- **Type**: Long-running Deployment (not CronWorkflow)
+- **Poll interval**: Every 30 seconds per active game
+- **Schedule check**: Every 5 minutes to detect new active games
+- **Concurrency**: Polls up to 20 games simultaneously
+- **Why**: CronWorkflows can't do sub-minute polling; a pitch happens every ~15 seconds
+
+```bash
+# Deploy the live poller
+kubectl apply -f config/k8s/deployment-live-poller.yaml
+
+# Check logs
+kubectl logs -f deployment/mlb-live-game-poller -n mlb-data-platform
+
+# Scale down during off-season
+kubectl scale deployment mlb-live-game-poller --replicas=0 -n mlb-data-platform
+```
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Live Game Poller Daemon                       │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐      │
+│  │ Schedule     │    │ Game Poller  │    │ Storage      │      │
+│  │ Checker      │───▶│ (30s loop)   │───▶│ Adapter      │      │
+│  │ (5min loop)  │    │              │    │              │      │
+│  └──────────────┘    └──────────────┘    └──────────────┘      │
+│         │                   │                   │               │
+│         ▼                   ▼                   ▼               │
+│  active_games[]      poll each game      PostgreSQL            │
+│  {pk: timestamp}     concurrently        game.live_game_v1     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Monitoring
 
 ```bash
