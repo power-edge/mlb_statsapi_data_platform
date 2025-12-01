@@ -1,34 +1,32 @@
-# CronWorkflow for Live Game Polling
-# Runs every 15 minutes during MLB game hours (noon to 2 AM ET)
-# Captures live game data and timestamps throughout the day
-# Only active during baseball season (March-November)
+# CronWorkflow for Schedule Polling
+# Polls schedule multiple times per day to catch changes (postponements, time updates)
+# MLB schedules can change throughout the day until games start
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
 metadata:
-  name: mlb-pipeline-live
+  name: mlb-schedule-polling
   namespace: mlb-data-platform
   labels:
     app: mlb-data-platform
     component: pipeline
-    schedule: live
+    schedule: schedule-polling
 spec:
-  # Schedule: Every 15 minutes from noon to 2 AM ET (16:00-06:00 UTC)
-  # More frequent polling to capture live game state changes
-  schedule: "*/15 16-23,0-6 * 3-11 *"  # Every 15 min, hours 16-23 and 0-6, March-November
+  # Schedule: Every 2 hours from 10 AM to 10 PM ET (baseball operating hours)
+  # This catches schedule updates, postponements, doubleheaders, etc.
+  schedule: "0 14,16,18,20,22,0,2 * 3-11 *"  # UTC hours covering 10am-10pm ET
   timezone: "UTC"
 
-  # Forbid concurrent - let one complete before starting next
-  concurrencyPolicy: "Forbid"
+  # Allow concurrent runs (quick operation)
+  concurrencyPolicy: "Allow"
 
   # History retention
-  successfulJobsHistoryLimit: 24  # Keep more for live monitoring
+  successfulJobsHistoryLimit: 14  # 1 week at ~2/day
   failedJobsHistoryLimit: 5
 
-  # Start automatically
   suspend: false
 
   workflowSpec:
-    entrypoint: live-pipeline
+    entrypoint: schedule-poll
 
     arguments:
       parameters:
@@ -38,26 +36,26 @@ spec:
     serviceAccountName: mlb-data-platform-sa
 
     templates:
-      - name: live-pipeline
+      - name: schedule-poll
         container:
           image: mlb-data-platform/ingestion:latest
-          command: [uv, run, mlb-etl, pipeline]
+          command: [uv, run, mlb-etl, ingest]
           args:
-            - daily
+            - --endpoint
+            - schedule
+            - --method
+            - schedule
+            - --params
+            - "sportId={{workflow.parameters.sport-id}}"
             - --save
             - --db-host
             - $(POSTGRES_HOST)
             - --db-port
             - "5432"
-            - --db-name
-            - $(POSTGRES_DB)
             - --db-user
             - $(POSTGRES_USER)
             - --db-password
             - $(POSTGRES_PASSWORD)
-            - --sport-id
-            - "{{workflow.parameters.sport-id}}"
-            - --no-enrich  # Skip enrichment for speed
           env:
             - name: POSTGRES_HOST
               valueFrom:
@@ -74,21 +72,18 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: password
-            - name: POSTGRES_DB
-              value: mlb_games
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "100m"
+              memory: "128Mi"
+              cpu: "50m"
             limits:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "256Mi"
+              cpu: "200m"
 
-    # Quick timeout for live polling
-    activeDeadlineSeconds: 1800  # 30 minutes max
+    # Quick timeout - schedule fetch is fast
+    activeDeadlineSeconds: 300  # 5 minutes max
 
-    # TTL cleanup - shorter retention for live polling
     ttlStrategy:
       secondsAfterCompletion: 3600   # 1 hour
       secondsAfterSuccess: 3600
-      secondsAfterFailure: 7200      # 2 hours for debugging
+      secondsAfterFailure: 7200

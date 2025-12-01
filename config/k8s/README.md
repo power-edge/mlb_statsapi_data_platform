@@ -31,13 +31,41 @@ kubectl get cronworkflows -n mlb-data-platform
 
 ### Daily Pipeline (`mlb-pipeline-daily`)
 - **Schedule**: 6 AM UTC daily (after games finish)
-- **Purpose**: Fetch all games from the previous day
+- **Purpose**: Fetch all games from the previous day (final cleanup)
 - **Duration**: ~5-10 minutes depending on game count
 
 ### Live Pipeline (`mlb-pipeline-live`)
-- **Schedule**: Every 30 minutes during game hours (March-November)
-- **Purpose**: Capture live game updates
+- **Schedule**: Every 15 minutes during game hours (noon-2AM ET, March-November)
+- **Purpose**: Capture live game data and timestamps throughout the day
 - **Duration**: ~2-5 minutes
+- **Concurrency**: Forbid (wait for previous run to complete)
+
+### Schedule Polling (`mlb-schedule-polling`)
+- **Schedule**: Every 2 hours from 10AM-10PM ET (March-November)
+- **Purpose**: Catch schedule changes (postponements, time updates, doubleheaders)
+- **Duration**: ~30 seconds
+- **Why**: MLB schedules can change until game time
+
+### Polling Strategy
+
+```
+                        Game Hours (ET)
+        10am    12pm    2pm     4pm     6pm     8pm     10pm    12am    2am
+         |       |       |       |       |       |       |       |       |
+Schedule ●───────●───────●───────●───────●───────●───────●       |       |
+  (2hr)  poll    poll    poll    poll    poll    poll    poll    |       |
+
+Games    |       ●───●───●───●───●───●───●───●───●───●───●───●───●───●   |
+ (15min) |       ↑───────────────game polling every 15 min───────────↑   |
+
+Daily    |       |       |       |       |       |       |       |       ●
+ (6am)   |       |       |       |       |       |       |       |    cleanup
+```
+
+This ensures:
+- **Schedule accuracy**: Catches changes before games start
+- **Live coverage**: Frequent updates during active games
+- **Timestamp capture**: Multiple snapshots per game for historical replay
 
 ## Monitoring
 
