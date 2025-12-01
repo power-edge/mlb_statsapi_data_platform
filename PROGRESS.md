@@ -1,8 +1,78 @@
 # MLB Data Platform - Development Progress
 
 **Last Updated**: 2025-12-01
-**Status**: 🎉 Phase 1, 2, 3 & 4 Complete - Pipeline Orchestration Implemented!
-**Next Machine**: Ready to continue - 527 tests passing
+**Status**: 🎉 Phase 1-5 Complete - Full Pipeline with Argo Integration!
+**Next Machine**: Ready for job scheduling and backfilling - 581 tests passing
+
+---
+
+## Session 2025-12-01 (Part 3): Storage Integration & Argo Workflows
+
+### Accomplished
+- ✅ Created `StorageAdapter` to bridge pipeline orchestrator → PostgreSQL backend
+- ✅ Added `mlb-etl pipeline` CLI commands (daily, backfill, games, status)
+- ✅ Created Argo workflow templates using new CLI commands
+- ✅ Implemented `ArgoClient` Python module for workflow management
+- ✅ All 581 unit tests pass (17 skipped for Docker-only execution)
+
+### New Files Created
+```
+src/mlb_data_platform/pipeline/
+└── storage_adapter.py    # Bridges orchestrator callback to PostgresStorageBackend
+
+src/mlb_data_platform/orchestration/
+├── __init__.py           # Module exports
+└── argo_client.py        # Python client for Argo Workflows API
+
+config/workflows/
+├── workflow-pipeline-daily.yaml     # Daily pipeline using CLI
+└── workflow-pipeline-backfill.yaml  # Backfill workflow
+
+tests/unit/
+├── test_storage_adapter.py   # 27 tests
+└── test_argo_client.py       # 27 tests
+```
+
+### CLI Commands
+```bash
+# Daily pipeline (fetch today's games)
+mlb-etl pipeline daily --save --db-port 65254
+
+# Backfill a season
+mlb-etl pipeline backfill --season 2024 --save
+
+# Backfill date range
+mlb-etl pipeline backfill --start 2024-06-01 --end 2024-06-30 --save
+
+# Fetch specific games
+mlb-etl pipeline games --game-pks 745123,745124 --save
+
+# Show pipeline status
+mlb-etl pipeline status
+```
+
+### Argo Client Usage
+```python
+from mlb_data_platform.orchestration import create_argo_client
+
+client = create_argo_client(host="localhost", port=2746)
+workflow = client.submit_daily_pipeline(date="2024-06-15")
+status = client.wait_for_completion(workflow.name)
+```
+
+### Metrics
+| Metric | Before | After |
+|--------|--------|-------|
+| Unit tests | 527 | **581** (+54) |
+| Tests passing | 527 | **581** |
+| CLI commands | 6 | **7** (+pipeline) |
+| Argo workflows | 5 | **7** (+2 pipeline) |
+
+### Next Session Tasks
+1. 🟡 **Schedule jobs in K8s** - Deploy CronWorkflows for daily ingestion
+2. 🟡 **Complete backfilling** - Run backfill for 2024 season data
+3. 🟡 **Verify data flow** - End-to-end test from API → PostgreSQL
+4. 🟡 Create BDD tests for pipeline scenarios
 
 ---
 
@@ -15,24 +85,6 @@
 - ✅ Implemented extractors (SeasonExtractor, ScheduleExtractor, GameExtractor)
 - ✅ Created V6 migration for `game.live_game_timestamps` table
 - ✅ Added 83 new unit tests for pipeline module
-- ✅ All 527 unit tests pass (17 skipped for Docker-only execution)
-
-### New Files Created
-```
-src/mlb_data_platform/pipeline/
-├── __init__.py           # Module exports
-├── extractors.py         # SeasonExtractor, ScheduleExtractor, GameExtractor
-├── live_poller.py        # LiveGamePoller for timestamp-based polling
-└── orchestrator.py       # PipelineOrchestrator coordinating flows
-
-sql/migrations/
-└── V6__game_timestamps_table.sql  # Timestamps storage with trigger parsing
-
-tests/unit/
-├── test_pipeline_extractors.py    # 24 tests
-├── test_pipeline_live_poller.py   # 25 tests
-└── test_pipeline_orchestrator.py  # 34 tests
-```
 
 ### Pipeline Architecture
 
@@ -51,43 +103,6 @@ Person.person / Team.teams → enrichment
 - `liveTimestampv11` - Get all available timestamps for backfill
 - `liveGameDiffPatchV1` - Get changes since last timestamp (efficient polling)
 - Timestamp format: `YYYYMMDD_HHMMSS`
-
-### Key Components
-
-| Component | Description |
-|-----------|-------------|
-| `PipelineConfig` | Configuration for pipeline execution (sport_id, polling intervals, etc.) |
-| `PipelineResult` | Results tracking (counts, game_pks, errors, duration) |
-| `PipelineOrchestrator` | Main coordinator for daily runs and season backfills |
-| `LiveGamePoller` | Polls games using timestamp diffs for efficiency |
-| `SeasonExtractor` | Extracts date ranges from Season.seasons response |
-| `ScheduleExtractor` | Extracts GameInfo from Schedule.schedule response |
-| `GameExtractor` | Extracts roster (player_ids, team_ids) from game data |
-
-### Timestamps Table Design
-```sql
-CREATE TABLE game.live_game_timestamps (
-    game_pk BIGINT NOT NULL,
-    timecode_raw VARCHAR(20) NOT NULL,  -- YYYYMMDD_HHMMSS
-    timecode_parsed TIMESTAMPTZ,        -- Auto-parsed via trigger
-    captured_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (game_pk, timecode_raw)
-);
-```
-
-### Metrics
-| Metric | Before | After |
-|--------|--------|-------|
-| Unit tests | 444 | **527** (+83) |
-| Tests passing | 444 | **527** |
-| Pipeline test coverage | 0% | **97%** (orchestrator) |
-| New modules | 0 | **4** (pipeline/) |
-
-### Next Session Tasks
-1. 🟡 Wire pipeline to storage backend (currently uses callback)
-2. 🟡 Add CLI commands for pipeline operations
-3. 🟡 Integration with Argo workflows
-4. 🟡 Create BDD tests for pipeline scenarios
 
 ---
 
