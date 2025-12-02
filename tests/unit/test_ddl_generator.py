@@ -42,7 +42,11 @@ class TestDDLGenerator:
         assert "COMMENT ON COLUMN test.simple_table.id IS 'Primary key'" in ddl
 
     def test_generate_partitioned_table(self, generator):
-        """Test generating DDL for a partitioned table."""
+        """Test generating DDL for a table with partition_by hint.
+
+        Note: Generator outputs TODO comments about partitioning because PostgreSQL
+        requires partition columns to be part of the primary key.
+        """
         table = Table(
             name="game.live_game_metadata",
             description="Game metadata",
@@ -57,14 +61,20 @@ class TestDDLGenerator:
 
         ddl = generator._generate_table_ddl(table)
 
-        # Check partitioning
-        assert "PARTITION BY RANGE (game_date)" in ddl
+        # Check partitioning hint (TODO comment, not inline PARTITION BY)
+        assert "TODO: Add partitioning by game_date" in ddl
+        assert "Requires adding game_date to primary key" in ddl
 
-        # Check partition index
+        # Check partition index (should still be created for the column)
         assert "CREATE INDEX IF NOT EXISTS idx_live_game_metadata_game_date" in ddl
 
     def test_generate_table_without_partition_column(self, generator):
-        """Test generating DDL for table with partition_by but missing column."""
+        """Test generating DDL for table with partition_by but missing column.
+
+        The generator outputs TODO hints regardless of whether the partition column
+        exists in the table (column may be added when partitioning is implemented).
+        No index is created for the non-existent column.
+        """
         table = Table(
             name="game.test_table",
             description="Test table",
@@ -73,16 +83,19 @@ class TestDDLGenerator:
                 Field(name="id", type="BIGINT", nullable=False),
                 Field(name="value", type="VARCHAR(100)", nullable=True),
             ],
-            partition_by="missing_column",  # Column doesn't exist!
+            partition_by="missing_column",  # Column doesn't exist in fields
         )
 
         ddl = generator._generate_table_ddl(table)
 
-        # Should NOT partition
+        # Should NOT have inline PARTITION BY (never does now)
         assert "PARTITION BY RANGE" not in ddl
 
-        # Should have warning
-        assert "WARNING: Partition column 'missing_column' not found" in ddl
+        # Should still have TODO hint (generator doesn't validate column existence)
+        assert "TODO: Add partitioning by missing_column" in ddl
+
+        # Should NOT have index on missing column (can't index non-existent column)
+        assert "idx_test_table_missing_column" not in ddl
 
     def test_generate_multi_column_primary_key(self, generator):
         """Test generating DDL for table with composite primary key."""

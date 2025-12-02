@@ -1,0 +1,43 @@
+# Spark Operator Helm Values
+# Used to configure the Spark Operator to watch multiple namespaces
+# Install/Upgrade with:
+#   helm upgrade --install spark-operator spark-operator/spark-operator \
+#     --namespace spark-operator --create-namespace \
+#     -f k8s/spark-operator-values.yaml
+
+# Spark job configuration
+spark:
+  # List of namespaces where Spark jobs can run
+  # Use empty string "" in the list to watch all namespaces
+  jobNamespaces:
+    - default
+    - mlb-data-platform
+
+# Controller configuration
+controller:
+  # Number of worker threads
+  workers: 10
+
+  # Enable UI service for Spark UI
+  uiService:
+    enable: true
+
+  # Leader election settings
+  leaderElection:
+    enable: true
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 2s
+
+# Enable webhook for validation and mutation
+webhook:
+  enable: true
+
+# Resource limits for the operator
+resources:
+  limits:
+    cpu: 200m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi

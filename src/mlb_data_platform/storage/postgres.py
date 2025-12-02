@@ -130,7 +130,13 @@ class PostgresStorageBackend:
         # Extract fields if schema metadata provided
         extracted_fields = {}
         if schema_metadata:
-            extracted_fields = self._extract_fields_from_data(data, schema_metadata)
+            # Build combined data structure for extraction (includes response + request params)
+            request_params = metadata.get("request", {}).get("query_params", {})
+            combined_data = {
+                **data,
+                "request_params": request_params
+            }
+            extracted_fields = self._extract_fields_from_data(combined_data, schema_metadata)
 
         # Build INSERT statement
         insert_sql = self._build_insert_sql(table_name, extracted_fields)
@@ -187,8 +193,13 @@ class PostgresStorageBackend:
         # Ensure partition exists
         self._ensure_partition_exists(table_name, partition_date)
 
-        # Extract fields
-        extracted_fields = self._extract_fields_from_data(data, schema_metadata)
+        # Extract fields (include request params for extraction)
+        request_params = metadata.get("request", {}).get("query_params", {})
+        combined_data = {
+            **data,
+            "request_params": request_params
+        }
+        extracted_fields = self._extract_fields_from_data(combined_data, schema_metadata)
 
         # Build UPSERT statement
         upsert_sql = self._build_upsert_sql(table_name, schema_metadata, extracted_fields)
@@ -343,17 +354,17 @@ class PostgresStorageBackend:
     def _ensure_partition_exists(self, table_name: str, partition_date: date) -> None:
         """Ensure partition exists for given date.
 
+        Checks for yearly partitions first (e.g., schedule_2024),
+        then monthly (e.g., schedule_2024_10).
+
         Args:
             table_name: Parent table name
             partition_date: Date to check partition for
         """
-        # Generate partition name (e.g., schedule_schedule_2024_11)
         schema, table = table_name.split(".")
         year = partition_date.year
-        month = partition_date.month
-        partition_name = f"{schema}.{table}_{year}_{month:02d}"
 
-        # Check if partition exists
+        # Check if yearly partition exists first (common pattern)
         check_sql = """
             SELECT EXISTS (
                 SELECT 1
@@ -365,12 +376,22 @@ class PostgresStorageBackend:
 
         with self.pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(check_sql, (schema, f"{table}_{year}_{month:02d}"))
-                exists = cur.fetchone()["exists"]
+                # Check yearly partition first
+                cur.execute(check_sql, (schema, f"{table}_{year}"))
+                yearly_exists = cur.fetchone()["exists"]
 
-                if not exists:
-                    # Create partition
-                    logger.info(f"Creating partition {partition_name} for {partition_date}")
+                if yearly_exists:
+                    # Yearly partition exists, no need to create monthly
+                    return
+
+                # Check monthly partition
+                month = partition_date.month
+                cur.execute(check_sql, (schema, f"{table}_{year}_{month:02d}"))
+                monthly_exists = cur.fetchone()["exists"]
+
+                if not monthly_exists:
+                    # Try to create monthly partition
+                    logger.info(f"Creating partition {table}_{year}_{month:02d} for {partition_date}")
                     self._create_partition(table_name, partition_date)
 
     def _create_partition(self, table_name: str, partition_date: date) -> None:

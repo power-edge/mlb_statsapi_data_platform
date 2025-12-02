@@ -1,0 +1,32 @@
+# Dockerfile for MLB Data Platform Ingestion Service
+# Lightweight Python image for API ingestion and CLI
+
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY pyproject.toml uv.lock ./
+COPY src/ ./src/
+COPY config/ ./config/
+
+# Install Python dependencies
+RUN uv pip install --system -e .
+
+# Set environment variables
+ENV PYTHONPATH=/app/src:${PYTHONPATH}
+
+# Default command runs the CLI
+ENTRYPOINT ["mlb-etl"]
+CMD ["--help"]

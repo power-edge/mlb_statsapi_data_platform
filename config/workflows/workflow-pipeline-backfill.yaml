@@ -1,0 +1,221 @@
+# Pipeline Backfill Workflow
+# Uses the mlb-etl pipeline backfill command for season/date range backfills
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: pipeline-backfill
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: pipeline
+    schedule: backfill
+spec:
+  entrypoint: pipeline-backfill
+
+  # Workflow-level parameters
+  arguments:
+    parameters:
+      - name: season
+        value: ""  # e.g., "2024"
+      - name: start-date
+        value: ""  # e.g., "2024-06-01"
+      - name: end-date
+        value: ""  # e.g., "2024-06-30"
+      - name: sport-id
+        value: "1"  # MLB
+      - name: enrich
+        value: "true"
+
+  # Service account for accessing secrets
+  serviceAccountName: mlb-data-platform-sa
+
+  # Lower parallelism for backfills to avoid overwhelming API
+  parallelism: 3
+
+  templates:
+    # Main backfill pipeline
+    - name: pipeline-backfill
+      dag:
+        tasks:
+          # Pre-flight check
+          - name: validate-params
+            template: validate-params
+
+          # Run backfill
+          - name: run-backfill
+            template: run-backfill
+            dependencies: [validate-params]
+
+          # Summary report
+          - name: backfill-report
+            template: backfill-report
+            dependencies: [run-backfill]
+
+    # Template: Validate parameters
+    - name: validate-params
+      script:
+        image: alpine:3.18
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          SEASON="{{workflow.parameters.season}}"
+          START="{{workflow.parameters.start-date}}"
+          END="{{workflow.parameters.end-date}}"
+
+          echo "Validating backfill parameters..."
+          echo "  Season: $SEASON"
+          echo "  Start Date: $START"
+          echo "  End Date: $END"
+
+          if [ -z "$SEASON" ] && [ -z "$START" ]; then
+            echo "ERROR: Must specify either --season or --start-date/--end-date"
+            exit 1
+          fi
+
+          if [ -n "$START" ] && [ -z "$END" ]; then
+            echo "ERROR: --end-date required when using --start-date"
+            exit 1
+          fi
+
+          echo "Parameters validated"
+
+    # Template: Run backfill command
+    - name: run-backfill
+      container:
+        image: mlb-data-platform/ingestion:latest
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+
+            # Build command based on parameters
+            CMD="uv run mlb-etl pipeline backfill --save"
+            CMD="$CMD --db-host $POSTGRES_HOST"
+            CMD="$CMD --db-port 5432"
+            CMD="$CMD --db-name $POSTGRES_DB"
+            CMD="$CMD --db-user $POSTGRES_USER"
+            CMD="$CMD --db-password $POSTGRES_PASSWORD"
+            CMD="$CMD --sport-id {{workflow.parameters.sport-id}}"
+
+            # Add season or date range
+            SEASON="{{workflow.parameters.season}}"
+            START="{{workflow.parameters.start-date}}"
+            END="{{workflow.parameters.end-date}}"
+
+            if [ -n "$SEASON" ]; then
+              CMD="$CMD --season $SEASON"
+            fi
+
+            if [ -n "$START" ]; then
+              CMD="$CMD --start $START"
+            fi
+
+            if [ -n "$END" ]; then
+              CMD="$CMD --end $END"
+            fi
+
+            # Add enrichment flag
+            if [ "{{workflow.parameters.enrich}}" = "true" ]; then
+              CMD="$CMD --enrich"
+            else
+              CMD="$CMD --no-enrich"
+            fi
+
+            echo "Running: $CMD"
+            eval $CMD
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+
+    # Template: Backfill summary report
+    - name: backfill-report
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "=== MLB Pipeline Backfill Report ==="
+          echo "Season: {{workflow.parameters.season}}"
+          echo "Date Range: {{workflow.parameters.start-date}} to {{workflow.parameters.end-date}}"
+          echo ""
+
+          echo "Data Summary:"
+          PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -c "SELECT
+                  'Total Schedules' as metric,
+                  COUNT(DISTINCT DATE(captured_at))::text as value
+                FROM schedule.schedule
+                UNION ALL
+                SELECT
+                  'Total Games',
+                  COUNT(*)::text
+                FROM game.live_game_v1
+                UNION ALL
+                SELECT
+                  'Unique Players',
+                  COUNT(DISTINCT (data->>'gamePk'))::text
+                FROM game.live_game_v1;"
+
+          echo ""
+          echo "Backfill complete!"
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+  # Longer timeout for backfills
+  activeDeadlineSeconds: 86400  # 24 hours
+
+  # Retry strategy
+  retryStrategy:
+    limit: 1
+    retryPolicy: "OnFailure"
+
+  # TTL - keep backfill results longer
+  ttlStrategy:
+    secondsAfterCompletion: 172800  # 48 hours
+    secondsAfterSuccess: 172800
+    secondsAfterFailure: 259200  # 72 hours for debugging

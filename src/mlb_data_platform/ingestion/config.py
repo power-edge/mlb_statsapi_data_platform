@@ -204,11 +204,13 @@ class JobConfig(BaseModel):
         return f"{schema}.{table}"
 
 
-def load_job_config(path: str | Path) -> JobConfig:
+def load_job_config(path: str | Path, resolve_vars: bool = False, **template_vars) -> JobConfig:
     """Load job configuration from YAML file.
 
     Args:
         path: Path to YAML configuration file
+        resolve_vars: If True, resolve template variables (${VAR})
+        **template_vars: Custom variables for template resolution
 
     Returns:
         Validated JobConfig instance
@@ -224,5 +226,10 @@ def load_job_config(path: str | Path) -> JobConfig:
 
     with open(config_path) as f:
         config_data = yaml.safe_load(f)
+
+    # Resolve template variables if requested
+    if resolve_vars:
+        from .template import resolve_config
+        config_data = resolve_config(config_data, **template_vars)
 
     return JobConfig(**config_data)

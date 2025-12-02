@@ -41,12 +41,12 @@ CREATE TABLE metadata.job_executions (
     records_processed BIGINT,
     records_failed BIGINT,
     error_message TEXT,
-    metadata JSONB,
-
-    INDEX idx_job_executions_name (job_name, start_time DESC),
-    INDEX idx_job_executions_status (status),
-    INDEX idx_job_executions_execution_id (execution_id)
+    metadata JSONB
 );
+
+CREATE INDEX idx_job_executions_name ON metadata.job_executions (job_name, start_time DESC);
+CREATE INDEX idx_job_executions_status ON metadata.job_executions (status);
+CREATE INDEX idx_job_executions_execution_id ON metadata.job_executions (execution_id);
 
 -- ==============================================================================
 -- SEASON SCHEMA
@@ -76,12 +76,12 @@ CREATE TABLE season.seasons (
 
     -- Ingestion metadata
     ingestion_timestamp TIMESTAMPTZ DEFAULT NOW(),
-    ingestion_job_id VARCHAR(100),
-
-    INDEX idx_seasons_captured_at (captured_at DESC),
-    INDEX idx_seasons_sport_id (sport_id),
-    INDEX idx_seasons_season_id (season_id)
+    ingestion_job_id VARCHAR(100)
 );
+
+CREATE INDEX idx_seasons_captured_at ON season.seasons (captured_at DESC);
+CREATE INDEX idx_seasons_sport_id ON season.seasons (sport_id);
+CREATE INDEX idx_seasons_season_id ON season.seasons (season_id);
 
 -- Partition by captured_at (monthly)
 -- Note: Partitions will be created dynamically by the application
@@ -96,7 +96,7 @@ CREATE SCHEMA IF NOT EXISTS schedule;
 
 -- Raw schedule data (complete JSON from Schedule.schedule())
 CREATE TABLE schedule.schedule (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGSERIAL,
 
     -- Request metadata
     request_params JSONB NOT NULL,
@@ -120,9 +120,7 @@ CREATE TABLE schedule.schedule (
     ingestion_timestamp TIMESTAMPTZ DEFAULT NOW(),
     ingestion_job_id VARCHAR(100),
 
-    INDEX idx_schedule_captured_at (captured_at DESC),
-    INDEX idx_schedule_schedule_date (schedule_date DESC),
-    INDEX idx_schedule_season (season)
+    PRIMARY KEY (id, schedule_date)
 ) PARTITION BY RANGE (schedule_date);
 
 -- Create partitions for current year and next year
@@ -131,6 +129,10 @@ CREATE TABLE schedule.schedule_2024 PARTITION OF schedule.schedule
 
 CREATE TABLE schedule.schedule_2025 PARTITION OF schedule.schedule
     FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+CREATE INDEX idx_schedule_captured_at ON schedule.schedule (captured_at DESC);
+CREATE INDEX idx_schedule_schedule_date ON schedule.schedule (schedule_date DESC);
+CREATE INDEX idx_schedule_season ON schedule.schedule (season);
 
 COMMENT ON TABLE schedule.schedule IS 'Raw schedule data from Schedule.schedule() endpoint';
 
@@ -175,16 +177,7 @@ CREATE TABLE game.live_game_v1 (
     ingestion_timestamp TIMESTAMPTZ DEFAULT NOW(),
     ingestion_job_id VARCHAR(100),
 
-    PRIMARY KEY (id, game_date),
-    INDEX idx_live_game_game_pk (game_pk),
-    INDEX idx_live_game_captured_at (captured_at DESC),
-    INDEX idx_live_game_game_date (game_date DESC),
-    INDEX idx_live_game_state (game_state),
-    INDEX idx_live_game_latest (game_pk, is_latest) WHERE is_latest = TRUE,
-    INDEX idx_live_game_season (season),
-
-    -- GIN index for fast JSONB queries
-    INDEX idx_live_game_data_gin ON game.live_game_v1 USING GIN (data)
+    PRIMARY KEY (id, game_date)
 ) PARTITION BY RANGE (game_date);
 
 -- Create partitions for current year and next year
@@ -193,6 +186,14 @@ CREATE TABLE game.live_game_v1_2024 PARTITION OF game.live_game_v1
 
 CREATE TABLE game.live_game_v1_2025 PARTITION OF game.live_game_v1
     FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+
+CREATE INDEX idx_live_game_game_pk ON game.live_game_v1 (game_pk);
+CREATE INDEX idx_live_game_captured_at ON game.live_game_v1 (captured_at DESC);
+CREATE INDEX idx_live_game_game_date ON game.live_game_v1 (game_date DESC);
+CREATE INDEX idx_live_game_state ON game.live_game_v1 (game_state);
+CREATE INDEX idx_live_game_latest ON game.live_game_v1 (game_pk, is_latest) WHERE is_latest = TRUE;
+CREATE INDEX idx_live_game_season ON game.live_game_v1 (season);
+CREATE INDEX idx_live_game_data_gin ON game.live_game_v1 USING GIN (data);
 
 COMMENT ON TABLE game.live_game_v1 IS 'Raw live game data from Game.liveGameV1() endpoint - MASTER table containing all game data';
 
@@ -303,7 +304,8 @@ COMMENT ON FUNCTION game.extract_jsonpath IS 'Extract specific JSON path from la
 -- Public read-only access (revoke in production)
 GRANT USAGE ON SCHEMA metadata, season, schedule, game TO PUBLIC;
 GRANT SELECT ON ALL TABLES IN SCHEMA metadata, season, schedule, game TO PUBLIC;
-GRANT SELECT ON ALL MATERIALIZED VIEWS IN SCHEMA game, schedule TO PUBLIC;
+GRANT SELECT ON game.latest_live TO PUBLIC;
+GRANT SELECT ON schedule.today TO PUBLIC;
 
 -- ==============================================================================
 -- COMPLETION

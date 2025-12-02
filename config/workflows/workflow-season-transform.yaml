@@ -1,0 +1,197 @@
+# Season Transformation Workflow
+# Transforms raw season data from PostgreSQL to normalized tables
+# Can be run standalone or as part of the daily pipeline
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: season-transform
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: transform
+    endpoint: season
+spec:
+  entrypoint: season-transform-pipeline
+
+  # Workflow-level parameters
+  arguments:
+    parameters:
+      - name: sport-ids
+        value: "[1]"  # MLB by default
+      - name: export-to-delta
+        value: "false"
+      - name: delta-path
+        value: "s3://mlb-data/season/seasons"
+      - name: spark-driver-memory
+        value: "2g"
+      - name: spark-executor-memory
+        value: "4g"
+
+  # Service account for accessing PostgreSQL secrets
+  serviceAccountName: mlb-data-platform-sa
+
+  templates:
+    # Main pipeline template
+    - name: season-transform-pipeline
+      steps:
+        - - name: validate-inputs
+            template: validate-inputs
+
+        - - name: run-spark-transform
+            template: spark-transform-job
+
+        - - name: validate-outputs
+            template: validate-outputs
+
+    # Input validation
+    - name: validate-inputs
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "Validating season raw data exists..."
+
+          PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -c "SELECT COUNT(*) FROM season.seasons;"
+
+          echo "✓ Validation passed"
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+    # Spark transformation job
+    - name: spark-transform-job
+      resource:
+        action: create
+        successCondition: status.applicationState.state == COMPLETED
+        failureCondition: status.applicationState.state == FAILED
+        manifest: |
+          apiVersion: sparkoperator.k8s.io/v1beta2
+          kind: SparkApplication
+          metadata:
+            name: season-transform-{{workflow.uid}}
+            namespace: mlb-data-platform
+          spec:
+            type: Python
+            mode: cluster
+            image: mlb-data-platform/spark:latest
+            imagePullPolicy: Never
+            mainApplicationFile: local:///app/examples/spark_jobs/transform_season.py
+
+            sparkVersion: "3.5.0"
+            restartPolicy:
+              type: Never
+
+            driver:
+              cores: 1
+              coreLimit: "1200m"
+              memory: "{{workflow.parameters.spark-driver-memory}}"
+              labels:
+                version: "3.5.0"
+                app: mlb-data-platform
+              serviceAccount: mlb-data-platform-sa
+              env:
+                - name: SPORT_IDS
+                  value: "{{workflow.parameters.sport-ids}}"
+                - name: EXPORT_TO_DELTA
+                  value: "{{workflow.parameters.export-to-delta}}"
+                - name: DELTA_PATH
+                  value: "{{workflow.parameters.delta-path}}"
+                - name: POSTGRES_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: host
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: username
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: password
+
+            executor:
+              cores: 1
+              instances: 2
+              memory: "{{workflow.parameters.spark-executor-memory}}"
+              labels:
+                version: "3.5.0"
+                app: mlb-data-platform
+
+    # Output validation
+    - name: validate-outputs
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "Validating transformed season data..."
+
+          # Check that normalized data was created
+          COUNT=$(PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -t -c "SELECT COUNT(*) FROM season.seasons_normalized;")
+
+          echo "Found $COUNT normalized season records"
+
+          if [ "$COUNT" -eq "0" ]; then
+            echo "ERROR: No normalized data created"
+            exit 1
+          fi
+
+          echo "✓ Output validation passed"
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+  # Retry failed steps up to 2 times
+  retryStrategy:
+    limit: 2
+    retryPolicy: "Always"
+    backoff:
+      duration: "1m"
+      factor: 2
+      maxDuration: "10m"

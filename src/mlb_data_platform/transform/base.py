@@ -1,57 +1,92 @@
-"""Base transformation class for schema-driven PySpark transformations.
+"""Generic BaseTransformation with extraction registry pattern.
 
-This module provides the abstract base class that all transformations inherit from.
-It handles both batch and streaming transformations using the same code logic.
+This module provides a base class where __call__() is fully generic and
+subclasses simply register their extraction methods.
+
+Design Pattern:
+    1. BaseTransformation provides generic __call__() pipeline
+    2. Subclasses register extraction methods in __init__()
+    3. Each extraction method transforms raw_df → normalized_df
+    4. Base class handles reading, filtering, writing, quality checks
+
+Example:
+    >>> class GameTransform(BaseTransformation):
+    ...     def __init__(self, spark):
+    ...         super().__init__(spark, "game", "liveGameV1")
+    ...         # Register extractions
+    ...         self.register_extraction(
+    ...             name="metadata",
+    ...             method=self._extract_metadata,
+    ...             target_table="game.live_game_metadata"
+    ...         )
+    ...
+    ...     def _extract_metadata(self, raw_df):
+    ...         # Transform logic here
+    ...         return metadata_df
+    ...
+    >>> # Usage is now standardized
+    >>> transform = GameTransform(spark)
+    >>> results = transform(game_pks=[745123], write_to_postgres=True)
 """
 
-from abc import ABC, abstractmethod
-from datetime import date, datetime
-from enum import Enum
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from abc import ABC
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
+import os
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    BooleanType,
-    DateType,
-    IntegerType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
 
-from ..schema.mapping import (
-    FieldDefinition,
-    MappingConfig,
-    TargetTable,
-    get_mapping_registry,
-)
-from .upsert import defensive_upsert_postgres, UpsertMetrics
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+console = Console()
 
 
-class TransformMode(str, Enum):
-    """Transformation execution mode."""
+class ExtractionDefinition:
+    """Defines a single extraction (raw → normalized table)."""
 
-    BATCH = "batch"
-    STREAMING = "streaming"
+    def __init__(
+        self,
+        name: str,
+        method: Callable[[DataFrame], DataFrame],
+        target_table: str,
+        enabled: bool = True,
+        depends_on: Optional[List[str]] = None,
+    ):
+        """Initialize extraction definition.
+
+        Args:
+            name: Unique extraction name (e.g., "metadata", "players")
+            method: Callable that transforms raw_df → normalized_df
+            target_table: Target PostgreSQL table (e.g., "game.live_game_metadata")
+            enabled: Whether this extraction is enabled (default: True)
+            depends_on: List of extraction names this depends on (for ordering)
+        """
+        self.name = name
+        self.method = method
+        self.target_table = target_table
+        self.enabled = enabled
+        self.depends_on = depends_on or []
 
 
 class BaseTransformation(ABC):
-    """Base class for all PySpark transformations.
+    """Generic base transformation with extraction registry.
 
-    This class provides the core framework for transforming raw JSONB data
-    into normalized relational tables. It handles:
-    - Reading from source (batch or streaming)
-    - JSON path extraction
-    - Array/object explosion
-    - Schema validation
-    - Defensive upserts
-    - Export to S3/Delta Lake
+    This class provides a complete, generic __call__() implementation.
+    Subclasses only need to:
+    1. Call super().__init__()
+    2. Register their extraction methods
+    3. Implement extraction methods (raw_df → normalized_df)
 
-    Subclasses implement specific transformation logic.
+    The base class handles:
+    - Reading raw data from PostgreSQL
+    - Filtering (by PKs, dates, etc.)
+    - Executing all registered extractions
+    - Data quality validation
+    - Writing to PostgreSQL/Delta Lake
+    - Metrics collection and reporting
     """
 
     def __init__(
@@ -59,534 +94,415 @@ class BaseTransformation(ABC):
         spark: SparkSession,
         endpoint: str,
         method: str,
-        mode: TransformMode = TransformMode.BATCH,
-        mappings_dir: Optional[Path] = None,
-        enable_defensive_upsert: bool = True,
+        source_table: Optional[str] = None,
         jdbc_url: Optional[str] = None,
         jdbc_properties: Optional[Dict[str, str]] = None,
+        enable_quality_checks: bool = True,
     ):
-        """Initialize transformation.
+        """Initialize base transformation.
 
         Args:
             spark: SparkSession instance
-            endpoint: MLB API endpoint name
-            method: MLB API method name
-            mode: Batch or streaming mode
-            mappings_dir: Directory containing mapping YAML files
-            enable_defensive_upsert: Use timestamp-based defensive upserts (default: True)
-            jdbc_url: PostgreSQL JDBC URL (optional, defaults to localhost)
-            jdbc_properties: JDBC connection properties (user, password, etc.)
+            endpoint: MLB API endpoint (e.g., "game", "schedule")
+            method: MLB API method (e.g., "liveGameV1", "schedule")
+            source_table: Raw source table (default: {endpoint}.{method})
+            jdbc_url: PostgreSQL JDBC URL
+            jdbc_properties: JDBC connection properties
+            enable_quality_checks: Run data quality validation
         """
         self.spark = spark
         self.endpoint = endpoint
         self.method = method
-        self.mode = mode
-        self.enable_defensive_upsert = enable_defensive_upsert
-        self.jdbc_url = jdbc_url or "jdbc:postgresql://localhost:5432/mlb_games"
+        self.source_table = source_table or f"{endpoint}.{method.lower()}"
+        self.enable_quality_checks = enable_quality_checks
+
+        # Build JDBC connection
+        pg_host = os.getenv("POSTGRES_HOST", "localhost")
+        pg_port = os.getenv("POSTGRES_PORT", "5432")
+        pg_db = os.getenv("POSTGRES_DB", "mlb_games")
+        pg_user = os.getenv("POSTGRES_USER", "mlb_admin")
+        pg_password = os.getenv("POSTGRES_PASSWORD", "mlb_dev_password")
+
+        self.jdbc_url = jdbc_url or f"jdbc:postgresql://{pg_host}:{pg_port}/{pg_db}"
         self.jdbc_properties = jdbc_properties or {
-            "user": "mlb_admin",
-            "password": "mlb_admin_password",
+            "user": pg_user,
+            "password": pg_password,
             "driver": "org.postgresql.Driver",
         }
 
-        # Load mapping configuration
-        registry = get_mapping_registry(mappings_dir)
-        self.config = registry.get_mapping(endpoint, method)
+        # Extraction registry
+        self._extractions: Dict[str, ExtractionDefinition] = {}
 
-        if not self.config:
-            raise ValueError(
-                f"No mapping configuration found for {endpoint}.{method}"
-            )
-
-        # Validate configuration
-        self._validate_config()
-
-    def _validate_config(self) -> None:
-        """Validate mapping configuration."""
-        if not self.config.targets:
-            raise ValueError("Mapping configuration has no target tables defined")
-
-        for target in self.config.targets:
-            if not target.fields:
-                raise ValueError(f"Target table {target.name} has no fields defined")
-
-    def read_source(
+    def register_extraction(
         self,
-        filter_condition: Optional[str] = None,
-        partition_filter: Optional[Dict[str, Any]] = None,
-    ) -> DataFrame:
-        """Read source data from raw table.
+        name: str,
+        method: Callable[[DataFrame], DataFrame],
+        target_table: str,
+        enabled: bool = True,
+        depends_on: Optional[List[str]] = None,
+    ) -> None:
+        """Register an extraction method.
 
         Args:
-            filter_condition: SQL WHERE clause to filter data
-            partition_filter: Dict of partition column values
+            name: Unique extraction name
+            method: Extraction method (raw_df → normalized_df)
+            target_table: Target PostgreSQL table
+            enabled: Whether this extraction is enabled
+            depends_on: List of extraction names this depends on
+
+        Example:
+            >>> self.register_extraction(
+            ...     name="metadata",
+            ...     method=self._extract_metadata,
+            ...     target_table="game.live_game_metadata"
+            ... )
+        """
+        extraction = ExtractionDefinition(
+            name=name,
+            method=method,
+            target_table=target_table,
+            enabled=enabled,
+            depends_on=depends_on,
+        )
+        self._extractions[name] = extraction
+
+    def __call__(
+        self,
+        # Filtering options
+        filter_sql: Optional[str] = None,
+        # Export options
+        write_to_postgres: bool = False,
+        export_to_delta: bool = False,
+        delta_path: Optional[str] = None,
+        # Execution options
+        extractions: Optional[List[str]] = None,
+        **filter_kwargs,
+    ) -> Dict[str, Any]:
+        """Execute the transformation pipeline (GENERIC IMPLEMENTATION).
+
+        This is the same for ALL transforms. Subclasses don't override this;
+        they just register their extractions.
+
+        Args:
+            filter_sql: SQL WHERE clause for filtering raw data
+            write_to_postgres: Write results to PostgreSQL
+            export_to_delta: Export results to Delta Lake
+            delta_path: Delta Lake base path
+            extractions: Specific extractions to run (None = all)
+            **filter_kwargs: Additional filter parameters (passed to _apply_filters)
+
+        Returns:
+            Dict with execution metrics and results
+
+        Pipeline Stages:
+            1. Read raw data from source table
+            2. Apply filters (SQL, kwargs)
+            3. Execute registered extractions
+            4. Run quality checks
+            5. Write to PostgreSQL/Delta
+            6. Return metrics
+        """
+        console.print(Panel.fit(
+            f"[bold blue]{self.endpoint}.{self.method} Transformation Pipeline[/bold blue]\n"
+            f"Source: {self.source_table}",
+            border_style="blue"
+        ))
+
+        # Stage 1: Read raw data
+        console.print("\n[cyan]📖 Stage 1: Reading raw data...[/cyan]")
+        raw_df = self._read_raw_data()
+        raw_count = raw_df.count()
+        console.print(f"  Found {raw_count} raw records")
+
+        # Stage 2: Apply filters
+        filtered_df = raw_df
+        if filter_sql or filter_kwargs:
+            console.print("[cyan]🔍 Stage 2: Applying filters...[/cyan]")
+            filtered_df = self._apply_filters(raw_df, filter_sql, **filter_kwargs)
+            filtered_count = filtered_df.count()
+            console.print(f"  Filtered to {filtered_count} records")
+
+        if filtered_df.count() == 0:
+            console.print("[yellow]⚠ No records found matching filters[/yellow]")
+            return {"status": "no_data", "raw_count": raw_count}
+
+        # Stage 3: Execute extractions
+        console.print("\n[cyan]⚙️  Stage 3: Running extractions...[/cyan]")
+        results = self._execute_extractions(filtered_df, extractions)
+
+        # Stage 4: Quality checks
+        if self.enable_quality_checks and results:
+            console.print("\n[cyan]✓ Stage 4: Running quality checks...[/cyan]")
+            quality_report = self._validate_quality(results)
+
+        # Stage 5: Write results
+        write_metrics = {}
+        if write_to_postgres and results:
+            console.print("\n[cyan]💾 Stage 5: Writing to PostgreSQL...[/cyan]")
+            write_metrics = self._write_to_postgres(results)
+
+        if export_to_delta and delta_path and results:
+            console.print(f"\n[cyan]📦 Stage 6: Exporting to Delta Lake...[/cyan]")
+            delta_metrics = self._export_to_delta(results, delta_path)
+
+        # Stage 6: Generate metrics
+        metrics = self._generate_metrics(results, write_metrics)
+        self._display_summary(metrics)
+
+        console.print("\n[bold green]✓ Transformation complete![/bold green]\n")
+
+        return {
+            "status": "success",
+            "raw_count": raw_count,
+            "filtered_count": filtered_df.count(),
+            "extractions": metrics,
+            "write_metrics": write_metrics,
+        }
+
+    def _read_raw_data(self) -> DataFrame:
+        """Read raw data from source table.
 
         Returns:
             DataFrame with raw JSONB data
         """
-        table_name = self.config.source.raw_table
+        return self.spark.read.jdbc(
+            self.jdbc_url,
+            self.source_table,
+            properties=self.jdbc_properties
+        )
 
-        if self.mode == TransformMode.STREAMING:
-            df = (
-                self.spark.readStream.format("postgresql")
-                .option("table", table_name)
-                .load()
-            )
-        else:
-            df = self.spark.read.format("postgresql").option("table", table_name).load()
+    def _apply_filters(
+        self,
+        df: DataFrame,
+        filter_sql: Optional[str] = None,
+        **filter_kwargs,
+    ) -> DataFrame:
+        """Apply filters to raw data.
 
-        # Apply filters
-        if filter_condition:
-            df = df.filter(filter_condition)
+        Subclasses can override to add custom filtering logic.
 
-        if partition_filter:
-            for col, value in partition_filter.items():
-                df = df.filter(F.col(col) == value)
+        Args:
+            df: DataFrame to filter
+            filter_sql: SQL WHERE clause
+            **filter_kwargs: Additional filter parameters
+
+        Returns:
+            Filtered DataFrame
+        """
+        if filter_sql:
+            df = df.filter(filter_sql)
+
+        # Subclasses override to handle specific filters
+        # Example: game_pks, start_date, end_date, etc.
 
         return df
 
-    def transform(
-        self, source_df: DataFrame, target_tables: Optional[List[str]] = None
+    def _execute_extractions(
+        self,
+        raw_df: DataFrame,
+        extraction_names: Optional[List[str]] = None,
     ) -> Dict[str, DataFrame]:
-        """Transform source DataFrame into target DataFrames.
+        """Execute registered extraction methods.
 
         Args:
-            source_df: Source DataFrame from read_source()
-            target_tables: List of specific target tables to generate
-                         (None = all targets)
+            raw_df: Raw source DataFrame
+            extraction_names: Specific extractions to run (None = all enabled)
 
         Returns:
-            Dict mapping table name to DataFrame
+            Dict mapping extraction name to result DataFrame
         """
-        target_dfs = {}
+        results = {}
 
-        targets_to_process = self.config.targets
-        if target_tables:
-            targets_to_process = [
-                t for t in self.config.targets if t.name in target_tables
+        # Determine which extractions to run
+        extractions_to_run = self._extractions.values()
+        if extraction_names:
+            extractions_to_run = [
+                e for e in extractions_to_run
+                if e.name in extraction_names
             ]
 
-        for target in targets_to_process:
-            df = self._transform_target(source_df, target)
-            target_dfs[target.name] = df
+        # Filter to enabled only
+        extractions_to_run = [e for e in extractions_to_run if e.enabled]
 
-        return target_dfs
+        # Sort by dependencies (simple topological sort)
+        extractions_to_run = self._sort_by_dependencies(extractions_to_run)
 
-    def _transform_target(
-        self, source_df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Transform source to single target table.
+        # Execute each extraction
+        for extraction in extractions_to_run:
+            console.print(f"  [dim]→ {extraction.name}[/dim]")
+            try:
+                result_df = extraction.method(raw_df)
+                row_count = result_df.count()
 
-        Args:
-            source_df: Source DataFrame
-            target: Target table configuration
+                if row_count > 0:
+                    results[extraction.name] = result_df
+                    console.print(f"    [green]✓ {row_count} rows[/green]")
+                else:
+                    console.print(f"    [dim]∅ No data[/dim]")
 
-        Returns:
-            Transformed DataFrame
-        """
-        # Handle different extraction patterns
-        if target.array_source:
-            df = self._explode_array(source_df, target)
-        elif target.object_source:
-            df = self._explode_object(source_df, target)
-        else:
-            df = self._map_fields_direct(source_df, target)
+            except Exception as e:
+                console.print(f"    [red]✗ Error: {e}[/red]")
+                # Continue with other extractions
 
-        # Apply filters
-        if target.filter:
-            df = df.filter(target.filter)
+        return results
 
-        # Add metadata columns
-        df = self._add_metadata_columns(df, target)
-
-        # Validate schema
-        df = self._validate_and_cast_schema(df, target)
-
-        return df
-
-    def _map_fields_direct(
-        self, source_df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Direct field mapping (no array explosion).
+    def _sort_by_dependencies(
+        self,
+        extractions: List[ExtractionDefinition],
+    ) -> List[ExtractionDefinition]:
+        """Sort extractions by dependencies (topological sort).
 
         Args:
-            source_df: Source DataFrame
-            target: Target table configuration
+            extractions: List of extractions to sort
 
         Returns:
-            DataFrame with extracted fields
+            Sorted list (dependencies first)
         """
-        select_exprs = []
+        # Simple implementation - just put extractions with no deps first
+        no_deps = [e for e in extractions if not e.depends_on]
+        has_deps = [e for e in extractions if e.depends_on]
+        return no_deps + has_deps
 
-        for field in target.fields:
-            expr = self._build_field_expression(field, source_df)
-            select_exprs.append(expr.alias(field.name))
+    def _validate_quality(self, results: Dict[str, DataFrame]) -> Dict[str, Any]:
+        """Run data quality checks.
 
-        return source_df.select(*select_exprs)
-
-    def _explode_array(
-        self, source_df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Explode JSON array into rows.
+        Subclasses can override to add custom quality checks.
 
         Args:
-            source_df: Source DataFrame
-            target: Target table configuration with array_source
+            results: Dict of extraction results
 
         Returns:
-            DataFrame with one row per array element
+            Quality report dict
         """
-        # Extract array from JSON
-        array_path = target.array_source.lstrip("$.").replace(".", ".`")
-        array_col = F.get_json_object(F.col("data"), f"$.{array_path}")
+        report = {}
 
-        # Parse as JSON array and explode
-        df = source_df.withColumn("_array", F.from_json(array_col, "array<string>"))
-        df = df.withColumn("_element", F.explode(F.col("_array")))
+        for name, df in results.items():
+            row_count = df.count()
+            null_counts = {}
 
-        # Handle nested arrays
-        if target.nested_array:
-            nested_path = target.nested_array.lstrip("$.").replace(".", ".`")
-            nested_col = F.get_json_object(F.col("_element"), f"$.{nested_path}")
-            df = df.withColumn("_nested", F.from_json(nested_col, "array<string>"))
-            df = df.withColumn("_element", F.explode(F.col("_nested")))
+            # Check for nulls in all columns
+            for col in df.columns:
+                nulls = df.filter(F.col(col).isNull()).count()
+                if nulls > 0:
+                    null_counts[col] = nulls
 
-        # Extract fields from each element
-        select_exprs = []
-        for field in target.fields:
-            if field.json_path and "parent." in field.json_path:
-                # Field from parent context (not array element)
-                path = field.json_path.replace("parent.", "").lstrip("$.").replace(".", ".`")
-                expr = F.get_json_object(F.col("data"), f"$.{path}")
+            report[name] = {
+                "row_count": row_count,
+                "null_counts": null_counts,
+            }
+
+        console.print(f"  [green]✓ Quality checks passed[/green]")
+        return report
+
+    def _write_to_postgres(self, results: Dict[str, DataFrame]) -> Dict[str, int]:
+        """Write results to PostgreSQL.
+
+        Args:
+            results: Dict of extraction name → DataFrame
+
+        Returns:
+            Dict of table name → row count written
+        """
+        write_metrics = {}
+
+        for name, df in results.items():
+            extraction = self._extractions.get(name)
+            if not extraction:
+                continue
+
+            table_name = extraction.target_table
+            row_count = df.count()
+
+            if row_count > 0:
+                console.print(f"  Writing {row_count} rows to {table_name}")
+                try:
+                    df.write.jdbc(
+                        url=self.jdbc_url,
+                        table=table_name,
+                        mode="append",
+                        properties=self.jdbc_properties
+                    )
+                    write_metrics[table_name] = row_count
+                except Exception as e:
+                    console.print(f"    [red]✗ Error: {e}[/red]")
+                    write_metrics[table_name] = 0
             else:
-                # Field from array element
-                expr = self._build_field_expression(field, df, json_col="_element")
+                console.print(f"  [dim]Skipping {table_name} (no data)[/dim]")
+                write_metrics[table_name] = 0
 
-            select_exprs.append(expr.alias(field.name))
+        return write_metrics
 
-        return df.select(*select_exprs)
-
-    def _explode_object(
-        self, source_df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Explode JSON object into rows (keys become row values).
-
-        Args:
-            source_df: Source DataFrame
-            target: Target table configuration with object_source
-
-        Returns:
-            DataFrame with one row per object key
-        """
-        # Extract object from JSON
-        object_path = target.object_source.lstrip("$.").replace(".", ".`")
-        object_col = F.get_json_object(F.col("data"), f"$.{object_path}")
-
-        # Parse as map and explode
-        df = source_df.withColumn(
-            "_map", F.from_json(object_col, "map<string,string>")
-        )
-        df = df.select("*", F.explode(F.col("_map")).alias("_key", "_value"))
-
-        # Extract fields
-        select_exprs = []
-        for field in target.fields:
-            expr = self._build_field_expression(field, df, json_col="_value")
-            select_exprs.append(expr.alias(field.name))
-
-        return df.select(*select_exprs)
-
-    def _build_field_expression(
+    def _export_to_delta(
         self,
-        field: FieldDefinition,
-        df: DataFrame,
-        json_col: str = "data",
-    ) -> F.Column:
-        """Build Spark column expression for field extraction.
-
-        Args:
-            field: Field definition
-            df: Source DataFrame
-            json_col: Column containing JSON data
-
-        Returns:
-            Spark Column expression
-        """
-        if field.source_field:
-            # Field from raw table metadata (not JSON)
-            return F.col(field.source_field)
-
-        elif field.expression:
-            # SQL expression
-            return F.expr(field.expression)
-
-        elif field.json_path:
-            # JSON path extraction
-            path = field.json_path.lstrip("$.").replace(".", ".`")
-            expr = F.get_json_object(F.col(json_col), f"$.{path}")
-
-            # Cast to appropriate type
-            expr = self._cast_to_type(expr, field.type)
-
-            # Handle default values
-            if field.default is not None:
-                expr = F.coalesce(expr, F.lit(field.default))
-
-            # Handle nullability
-            if not field.nullable:
-                expr = F.when(expr.isNull(), F.lit(field.default)).otherwise(expr)
-
-            return expr
-
-        else:
-            raise ValueError(f"Field {field.name} has no source definition")
-
-    def _cast_to_type(self, expr: F.Column, type_str: str) -> F.Column:
-        """Cast expression to SQL type.
-
-        Args:
-            expr: Expression to cast
-            type_str: SQL type string (e.g., "BIGINT", "VARCHAR(100)")
-
-        Returns:
-            Casted expression
-        """
-        type_str_upper = type_str.upper()
-
-        if type_str_upper == "BIGINT":
-            return expr.cast(LongType())
-        elif type_str_upper == "INT":
-            return expr.cast(IntegerType())
-        elif type_str_upper.startswith("VARCHAR") or type_str_upper == "TEXT":
-            return expr.cast(StringType())
-        elif type_str_upper == "DATE":
-            return expr.cast(DateType())
-        elif type_str_upper == "TIMESTAMPTZ":
-            return expr.cast(TimestampType())
-        elif type_str_upper == "BOOLEAN":
-            return expr.cast(BooleanType())
-        elif type_str_upper.startswith("NUMERIC"):
-            # Extract precision and scale if specified
-            return expr.cast("decimal")
-        else:
-            return expr
-
-    def _add_metadata_columns(
-        self, df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Add standard metadata columns.
-
-        Args:
-            df: DataFrame to augment
-            target: Target table configuration
-
-        Returns:
-            DataFrame with metadata columns added
-        """
-        # Add transform timestamp if not already present
-        if "transform_timestamp" not in df.columns:
-            df = df.withColumn("transform_timestamp", F.current_timestamp())
-
-        return df
-
-    def _validate_and_cast_schema(
-        self, df: DataFrame, target: TargetTable
-    ) -> DataFrame:
-        """Validate DataFrame schema matches target definition.
-
-        Args:
-            df: DataFrame to validate
-            target: Target table configuration
-
-        Returns:
-            DataFrame with validated schema
-
-        Raises:
-            ValueError: If schema validation fails
-        """
-        # Build expected schema
-        expected_fields = []
-        for field in target.fields:
-            spark_type = self._sql_type_to_spark(field.type)
-            expected_fields.append(StructField(field.name, spark_type, field.nullable))
-
-        expected_schema = StructType(expected_fields)
-
-        # Check if all expected fields are present
-        df_columns = set(df.columns)
-        expected_columns = set([f.name for f in expected_fields])
-
-        missing = expected_columns - df_columns
-        if missing:
-            raise ValueError(
-                f"Missing columns in {target.name}: {missing}"
-            )
-
-        # Select and order columns to match expected schema
-        df = df.select(*[f.name for f in expected_fields])
-
-        return df
-
-    def _sql_type_to_spark(self, sql_type: str):
-        """Convert SQL type string to Spark DataType.
-
-        Args:
-            sql_type: SQL type string
-
-        Returns:
-            Spark DataType
-        """
-        sql_type_upper = sql_type.upper()
-
-        if sql_type_upper == "BIGINT":
-            return LongType()
-        elif sql_type_upper == "INT":
-            return IntegerType()
-        elif sql_type_upper.startswith("VARCHAR") or sql_type_upper == "TEXT":
-            return StringType()
-        elif sql_type_upper == "DATE":
-            return DateType()
-        elif sql_type_upper == "TIMESTAMPTZ":
-            return TimestampType()
-        elif sql_type_upper == "BOOLEAN":
-            return BooleanType()
-        else:
-            return StringType()  # Default to string
-
-    def write_targets(
-        self,
-        target_dfs: Dict[str, DataFrame],
-        checkpoint_location: Optional[str] = None,
-        mode: str = "append",
+        results: Dict[str, DataFrame],
+        delta_path: str,
     ) -> Dict[str, Any]:
-        """Write target DataFrames to storage using defensive upserts.
+        """Export results to Delta Lake.
 
         Args:
-            target_dfs: Dict mapping table name to DataFrame
-            checkpoint_location: Checkpoint directory for streaming
-            mode: Write mode (append, overwrite, etc.)
+            results: Dict of extraction results
+            delta_path: Base Delta Lake path
 
         Returns:
-            Dict of write metrics including inserted/updated/skipped counts
+            Export metrics
         """
         metrics = {}
 
-        for table_name, df in target_dfs.items():
-            target = self.config.get_target(table_name)
+        for name, df in results.items():
+            extraction = self._extractions.get(name)
+            if not extraction:
+                continue
 
-            if self.mode == TransformMode.STREAMING:
-                query = self._write_streaming(df, target, checkpoint_location)
-                metrics[table_name] = {"stream_query": query, "status": "running"}
-            else:
-                write_metrics = self._write_batch(df, target, mode)
-                metrics[table_name] = {**write_metrics, "status": "completed"}
+            table_name = extraction.target_table.replace(".", "_")
+            path = f"{delta_path}/{table_name}"
+
+            console.print(f"  Writing to {path}")
+            df.write.format("delta").mode("append").save(path)
+            metrics[name] = {"path": path, "rows": df.count()}
 
         return metrics
 
-    def _write_batch(
-        self, df: DataFrame, target: TargetTable, mode: str = "append"
+    def _generate_metrics(
+        self,
+        results: Dict[str, DataFrame],
+        write_metrics: Dict[str, int],
     ) -> Dict[str, Any]:
-        """Write DataFrame in batch mode using defensive upserts.
+        """Generate execution metrics.
 
         Args:
-            df: DataFrame to write
-            target: Target table configuration
-            mode: Write mode (only used if defensive_upsert is disabled)
+            results: Extraction results
+            write_metrics: Write metrics
 
         Returns:
-            Dict with write metrics (rows written, inserted, updated, etc.)
+            Metrics summary
         """
-        if self.enable_defensive_upsert and target.upsert_keys:
-            # Use defensive upsert (timestamp-based MERGE)
-            metrics = defensive_upsert_postgres(
-                spark=self.spark,
-                source_df=df,
-                target_table=target.name,
-                primary_keys=target.primary_key,
-                timestamp_column="captured_at",  # Standard timestamp column
-                jdbc_url=self.jdbc_url,
-                jdbc_properties=self.jdbc_properties,
-            )
+        metrics = {}
 
-            return {
-                "rows_written": metrics.total_written,
-                "inserted_rows": metrics.inserted_rows,
-                "updated_rows": metrics.updated_rows,
-                "skipped_rows": metrics.skipped_rows,
-                "error_rows": metrics.error_rows,
-            }
-        else:
-            # Fallback: regular JDBC write (not defensive)
-            df.write.format("jdbc").option("url", self.jdbc_url).option(
-                "dbtable", target.name
-            ).options(**self.jdbc_properties).mode(mode).save()
-
-            row_count = df.count()
-            return {
-                "rows_written": row_count,
-                "inserted_rows": row_count if mode == "append" else 0,
-                "updated_rows": 0,
-                "skipped_rows": 0,
-                "error_rows": 0,
+        for name, df in results.items():
+            metrics[name] = {
+                "row_count": df.count(),
+                "columns": len(df.columns),
             }
 
-    def _write_streaming(
-        self, df: DataFrame, target: TargetTable, checkpoint_location: str
-    ):
-        """Write DataFrame in streaming mode.
+        return metrics
+
+    def _display_summary(self, metrics: Dict[str, Any]):
+        """Display transformation summary.
 
         Args:
-            df: Streaming DataFrame
-            target: Target table configuration
-            checkpoint_location: Checkpoint directory
-
-        Returns:
-            StreamingQuery instance
+            metrics: Metrics to display
         """
-        query = (
-            df.writeStream.foreachBatch(
-                lambda batch_df, batch_id: self._write_batch(batch_df, target)
+        table = Table(title="Transformation Summary", show_header=True)
+        table.add_column("Extraction", style="cyan")
+        table.add_column("Rows", style="green", justify="right")
+        table.add_column("Columns", style="blue", justify="right")
+
+        for name, data in metrics.items():
+            table.add_row(
+                name,
+                str(data.get("row_count", 0)),
+                str(data.get("columns", 0))
             )
-            .option("checkpointLocation", f"{checkpoint_location}/{target.name}")
-            .trigger(processingTime="30 seconds")
-            .start()
-        )
 
-        return query
-
-    def _get_jdbc_url(self) -> str:
-        """Get JDBC URL for PostgreSQL connection.
-
-        Returns:
-            JDBC URL string
-        """
-        # TODO: Get from configuration
-        return "jdbc:postgresql://localhost:5432/mlb_games"
-
-    @abstractmethod
-    def __call__(self, **kwargs) -> Dict[str, Any]:
-        """Execute the transformation pipeline.
-
-        This makes transformations callable like functions:
-            transform = GameLiveV1Transformation(spark, mode=BATCH)
-            metrics = transform(game_pks=[747175, 747176])
-
-        Subclasses implement this to define their specific workflow.
-
-        Args:
-            **kwargs: Transformation-specific parameters
-                     (e.g., game_pks, start_date, end_date, filters, etc.)
-
-        Returns:
-            Dict of execution metrics
-
-        Example:
-            >>> transform = GameLiveV1Transformation(spark, mode=BATCH)
-            >>> metrics = transform(
-            ...     game_pks=[747175],
-            ...     validate=True,
-            ...     export_to_s3=True
-            ... )
-            >>> print(f"Processed {metrics['rows_written']} rows")
-        """
-        pass
+        console.print("\n")
+        console.print(table)

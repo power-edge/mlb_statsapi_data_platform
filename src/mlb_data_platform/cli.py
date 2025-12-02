@@ -12,6 +12,7 @@ from rich.tree import Tree
 
 from .ingestion.client import MLBStatsAPIClient
 from .ingestion.config import StubMode, load_job_config
+from .ingestion.template import resolve_config
 from .schema.registry import get_registry
 from .storage.postgres import PostgresConfig, PostgresStorageBackend
 
@@ -47,8 +48,17 @@ def ingest(
         console.print(f"Save to PostgreSQL: [green]enabled[/green] ({db_host}:{db_port}/{db_name})")
 
     try:
-        # Load job configuration
-        job_config = load_job_config(job)
+        # Prepare template variables
+        template_vars = {}
+        if game_pks:
+            # For single game_pk (first in list)
+            pk_list = [int(pk.strip()) for pk in game_pks.split(",")]
+            if pk_list:
+                template_vars["GAME_PK"] = pk_list[0]
+                template_vars["GAME_PKS"] = game_pks
+
+        # Load job configuration with variable resolution
+        job_config = load_job_config(job, resolve_vars=True, **template_vars)
         console.print(f"✓ Loaded job config: [yellow]{job_config.name}[/yellow]")
         console.print(f"  Type: {job_config.type.value}")
         console.print(f"  Endpoint: {job_config.source.endpoint}.{job_config.source.method}")
@@ -554,6 +564,268 @@ def venue(
         console.print(f"[red]Unknown action:[/red] {action}")
         console.print("Valid actions: fetch-park-factors, fetch-seamheads, list-venues, list-park-factors, refresh-views")
         raise typer.Exit(code=1)
+
+
+@app.command()
+def pipeline(
+    action: str = typer.Argument(..., help="Action: daily, backfill, games, status"),
+    target_date: str = typer.Option("", "--date", "-d", help="Target date (YYYY-MM-DD)"),
+    season: str = typer.Option("", "--season", "-s", help="Season year for backfill (e.g., 2024)"),
+    start_date: str = typer.Option("", "--start", help="Start date for range (YYYY-MM-DD)"),
+    end_date: str = typer.Option("", "--end", help="End date for range (YYYY-MM-DD)"),
+    game_pks: str = typer.Option("", "--game-pks", "-g", help="Comma-separated game PKs"),
+    sport_id: int = typer.Option(1, "--sport-id", help="Sport ID (1=MLB)"),
+    save: bool = typer.Option(False, "--save", help="Save data to PostgreSQL"),
+    upsert: bool = typer.Option(False, "--upsert/--insert", help="Use upsert or insert (default)"),
+    enrich: bool = typer.Option(True, "--enrich/--no-enrich", help="Fetch player/team enrichment"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be fetched"),
+    db_host: str = typer.Option("localhost", "--db-host", help="PostgreSQL host"),
+    db_port: int = typer.Option(5432, "--db-port", help="PostgreSQL port"),
+    db_name: str = typer.Option("mlb_games", "--db-name", help="PostgreSQL database name"),
+    db_user: str = typer.Option("mlb_admin", "--db-user", help="PostgreSQL user"),
+    db_password: str = typer.Option("mlb_admin_password", "--db-password", help="PostgreSQL password"),
+):
+    """Run pipeline orchestration commands.
+
+    Actions:
+        daily    - Fetch today's schedule and games
+        backfill - Backfill a season or date range
+        games    - Fetch specific games by game_pk
+        status   - Show pipeline status and statistics
+    """
+    from datetime import date as dt_date
+    from datetime import datetime
+
+    from pymlb_statsapi import StatsAPI
+
+    from .pipeline import PipelineConfig, PipelineOrchestrator, create_storage_callback
+
+    console.print(f"[bold green]Pipeline action:[/bold green] {action}")
+
+    # Parse dates
+    parsed_target_date = None
+    if target_date:
+        parsed_target_date = dt_date.fromisoformat(target_date)
+
+    parsed_start_date = None
+    if start_date:
+        parsed_start_date = dt_date.fromisoformat(start_date)
+
+    parsed_end_date = None
+    if end_date:
+        parsed_end_date = dt_date.fromisoformat(end_date)
+
+    # Parse game_pks
+    game_pk_list = []
+    if game_pks:
+        game_pk_list = [int(pk.strip()) for pk in game_pks.split(",")]
+
+    # Setup storage if saving
+    adapter = None
+    backend = None
+    storage_callback = None
+
+    if save and not dry_run:
+        adapter, backend = create_storage_callback(
+            host=db_host,
+            port=db_port,
+            database=db_name,
+            user=db_user,
+            password=db_password,
+            upsert=upsert,
+        )
+        storage_callback = adapter.store
+        console.print(f"[green]✓ Connected to PostgreSQL[/green] ({db_host}:{db_port}/{db_name})")
+
+    # Create pipeline config
+    config = PipelineConfig(
+        sport_id=sport_id,
+        enrich_players=enrich,
+        enrich_teams=enrich,
+    )
+
+    # Create orchestrator
+    api = StatsAPI()
+    orchestrator = PipelineOrchestrator(
+        api=api,
+        config=config,
+        storage_callback=storage_callback,
+    )
+
+    try:
+        if action == "daily":
+            target = parsed_target_date or dt_date.today()
+            console.print(f"Running daily pipeline for: [cyan]{target}[/cyan]")
+
+            if dry_run:
+                console.print("[yellow]Dry run - showing schedule only[/yellow]")
+                games = orchestrator.fetch_schedule(target)
+                _display_schedule(games)
+            else:
+                result = orchestrator.run_daily(target)
+                _display_pipeline_result(result, adapter)
+
+        elif action == "backfill":
+            if season:
+                console.print(f"Backfilling season: [cyan]{season}[/cyan]")
+                result = orchestrator.backfill_season(
+                    season_id=season,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                )
+            elif parsed_start_date and parsed_end_date:
+                console.print(
+                    f"Backfilling range: [cyan]{parsed_start_date}[/cyan] to [cyan]{parsed_end_date}[/cyan]"
+                )
+                result = orchestrator.backfill_season(
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                )
+            else:
+                console.print("[red]Error: Specify --season or --start/--end for backfill[/red]")
+                raise typer.Exit(1)
+
+            _display_pipeline_result(result, adapter)
+
+        elif action == "games":
+            if not game_pk_list:
+                console.print("[red]Error: Specify --game-pks for games action[/red]")
+                raise typer.Exit(1)
+
+            console.print(f"Fetching {len(game_pk_list)} games: {game_pk_list}")
+
+            from .pipeline import PipelineResult
+
+            result = PipelineResult()
+
+            for game_pk in game_pk_list:
+                try:
+                    game_data = orchestrator.fetch_game(game_pk)
+                    result.games_fetched += 1
+                    result.game_pks.append(game_pk)
+                    console.print(f"[green]✓[/green] Fetched game {game_pk}")
+
+                    if enrich:
+                        enrichment = orchestrator.enrich_from_game(game_data)
+                        result.players_fetched += enrichment.players_fetched
+                        result.teams_fetched += enrichment.teams_fetched
+
+                except Exception as e:
+                    result.errors.append(f"Game {game_pk}: {e}")
+                    console.print(f"[red]✗[/red] Failed game {game_pk}: {e}")
+
+            result.finished_at = datetime.now()
+            _display_pipeline_result(result, adapter)
+
+        elif action == "status":
+            console.print("[bold]Pipeline Status[/bold]")
+
+            # Show current season info
+            current_season = orchestrator.get_current_season()
+            if current_season:
+                console.print(f"\n[bold]Current Season:[/bold]")
+                console.print(f"  Season ID: [cyan]{current_season.season_id}[/cyan]")
+                console.print(f"  Regular Season: {current_season.regular_season_start} to {current_season.regular_season_end}")
+                if current_season.spring_start:
+                    console.print(f"  Spring Training: {current_season.spring_start} to {current_season.spring_end}")
+
+            # Show today's schedule
+            today_games = orchestrator.fetch_schedule()
+            console.print(f"\n[bold]Today's Games:[/bold] {len(today_games)}")
+            _display_schedule(today_games, limit=5)
+
+        else:
+            console.print(f"[red]Unknown action:[/red] {action}")
+            console.print("Valid actions: daily, backfill, games, status")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]Pipeline error:[/red] {e}")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+    finally:
+        if backend:
+            backend.close()
+            console.print("[dim]Closed database connection[/dim]")
+
+
+def _display_schedule(games: list, limit: int = 0):
+    """Display schedule games in a table."""
+    table = Table(title="Schedule")
+    table.add_column("Game PK", style="cyan", justify="right")
+    table.add_column("Status", style="green")
+    table.add_column("Away", style="magenta")
+    table.add_column("Home", style="yellow")
+    table.add_column("Time", style="dim")
+
+    display_games = games[:limit] if limit else games
+
+    for game in display_games:
+        table.add_row(
+            str(game.game_pk),
+            game.status,
+            game.away_team,
+            game.home_team,
+            game.game_datetime.strftime("%H:%M") if game.game_datetime else "TBD",
+        )
+
+    if limit and len(games) > limit:
+        table.add_row("...", f"+{len(games) - limit} more", "", "", "")
+
+    console.print(table)
+
+
+def _display_pipeline_result(result, adapter=None):
+    """Display pipeline execution result."""
+    console.print("\n[bold]Pipeline Result[/bold]")
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Duration", f"{result.duration_seconds:.1f}s")
+    table.add_row("Schedules fetched", str(result.schedules_fetched))
+    table.add_row("Games fetched", str(result.games_fetched))
+    table.add_row("Timestamps fetched", str(result.timestamps_fetched))
+    table.add_row("Players fetched", str(result.players_fetched))
+    table.add_row("Teams fetched", str(result.teams_fetched))
+
+    if result.errors:
+        table.add_row("Errors", f"[red]{len(result.errors)}[/red]")
+
+    console.print(table)
+
+    # Show storage stats if adapter provided
+    if adapter:
+        stats = adapter.get_stats()
+        console.print("\n[bold]Storage Stats[/bold]")
+        storage_table = Table(show_header=False, box=None)
+        storage_table.add_column("Metric", style="cyan")
+        storage_table.add_column("Value", justify="right")
+
+        storage_table.add_row("Inserts", str(stats["inserts"]))
+        storage_table.add_row("Upserts", str(stats["upserts"]))
+        storage_table.add_row("Errors", str(stats["errors"]))
+
+        if stats["by_table"]:
+            storage_table.add_row("", "")
+            storage_table.add_row("[bold]By Table[/bold]", "")
+            for table_name, count in stats["by_table"].items():
+                storage_table.add_row(f"  {table_name}", str(count))
+
+        console.print(storage_table)
+
+    # Show errors if any
+    if result.errors:
+        console.print("\n[bold red]Errors:[/bold red]")
+        for error in result.errors[:10]:  # Limit to first 10
+            console.print(f"  [red]•[/red] {error}")
+        if len(result.errors) > 10:
+            console.print(f"  ... and {len(result.errors) - 10} more errors")
+
+    console.print("\n[green]✓ Pipeline complete[/green]")
 
 
 @app.command()

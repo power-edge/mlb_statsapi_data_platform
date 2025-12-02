@@ -1,0 +1,113 @@
+# Deployment for Live Game Polling
+# Long-running pod that continuously polls active games every 30 seconds
+# This handles the high-frequency polling needed during live games
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlb-live-game-poller
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: live-poller
+spec:
+  # Single replica - coordinates polling internally
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: mlb-data-platform
+      component: live-poller
+
+  template:
+    metadata:
+      labels:
+        app: mlb-data-platform
+        component: live-poller
+    spec:
+      serviceAccountName: mlb-data-platform-sa
+
+      containers:
+        - name: live-poller
+          image: mlb-data-platform/ingestion:latest
+          command: [uv, run, python, -m, mlb_data_platform.pipeline.live_poller_daemon]
+          env:
+            # Polling configuration
+            - name: POLL_INTERVAL_SECONDS
+              value: "30"
+            - name: SCHEDULE_CHECK_INTERVAL_SECONDS
+              value: "300"  # Check for new games every 5 minutes
+            - name: MAX_CONCURRENT_GAMES
+              value: "20"   # Max games to poll simultaneously
+
+            # Database configuration
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: host
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: mlb_games
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          # Health checks
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; exit(0)"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; exit(0)"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+      # Restart policy
+      restartPolicy: Always
+
+---
+# Optional: HorizontalPodAutoscaler for high game volume days
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: mlb-live-poller-hpa
+#   namespace: mlb-data-platform
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: mlb-live-game-poller
+#   minReplicas: 1
+#   maxReplicas: 3
+#   metrics:
+#     - type: Resource
+#       resource:
+#         name: cpu
+#         target:
+#           type: Utilization
+#           averageUtilization: 70

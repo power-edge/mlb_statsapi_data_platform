@@ -35,10 +35,17 @@ help:
 	@echo "  make db-init             Initialize PostgreSQL schemas"
 	@echo "  make db-connect          Connect to PostgreSQL CLI"
 	@echo ""
-	@echo "🧪 Development:"
+	@echo "🧪 Testing:"
+	@echo "  make test                    Run unit tests"
+	@echo "  make test-integration        Run integration tests"
+	@echo "  make test-transform-all      Test all transformations (Docker)"
+	@echo "  make test-transform-season   Test season transformation"
+	@echo "  make test-transform-schedule Test schedule transformation"
+	@echo "  make test-transform-game     Test game transformation"
+	@echo ""
+	@echo "🔧 Development:"
 	@echo "  make install             Install dependencies (uv sync)"
-	@echo "  make test                Run unit tests"
-	@echo "  make test-integration    Run integration tests"
+	@echo "  make build-spark         Build Spark Docker image"
 	@echo "  make lint                Run linters (ruff check)"
 	@echo "  make format              Format code (ruff format)"
 	@echo "  make clean               Clean build artifacts"
@@ -192,6 +199,29 @@ test-integration:
 	@echo "Running integration tests..."
 	SPARK_VERSION=3.5 uv run pytest tests/integration/ -v --no-cov
 	@echo "✓ Integration tests complete"
+
+# Transformation Testing (Docker-based)
+test-transform-season:
+	@echo "Testing season transformation via Docker..."
+	./scripts/test_transform.sh season
+
+test-transform-schedule:
+	@echo "Testing schedule transformation via Docker..."
+	./scripts/test_transform.sh schedule
+
+test-transform-game:
+	@echo "Testing game transformation via Docker..."
+	./scripts/test_transform.sh game
+
+test-transform-all:
+	@echo "Testing all transformations via Docker..."
+	./scripts/test_transform.sh all
+
+# Build Spark Docker image
+build-spark:
+	@echo "Building Spark Docker image..."
+	docker compose build spark
+	@echo "✓ Spark image built"
 
 # Quick start for new developers
 quickstart: install generate-all docker-up docker-init docker-migrate

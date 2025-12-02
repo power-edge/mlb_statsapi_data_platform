@@ -1,0 +1,222 @@
+# Schedule Transformation Workflow
+# Transforms raw schedule data from PostgreSQL to normalized tables
+# Extracts games from nested arrays and creates schedule.games table
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: schedule-transform
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: transform
+    endpoint: schedule
+spec:
+  entrypoint: schedule-transform-pipeline
+
+  # Workflow-level parameters
+  arguments:
+    parameters:
+      - name: start-date
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{workflow.creationTimestamp.d}}"
+      - name: end-date
+        value: "{{workflow.creationTimestamp.Y}}-{{workflow.creationTimestamp.m}}-{{workflow.creationTimestamp.d}}"
+      - name: sport-ids
+        value: "[1]"  # MLB by default
+      - name: export-to-delta
+        value: "false"
+      - name: delta-path
+        value: "s3://mlb-data/schedule/games"
+      - name: spark-driver-memory
+        value: "2g"
+      - name: spark-executor-memory
+        value: "4g"
+
+  # Service account for accessing PostgreSQL secrets
+  serviceAccountName: mlb-data-platform-sa
+
+  templates:
+    # Main pipeline template
+    - name: schedule-transform-pipeline
+      steps:
+        - - name: validate-inputs
+            template: validate-inputs
+
+        - - name: run-spark-transform
+            template: spark-transform-job
+
+        - - name: validate-outputs
+            template: validate-outputs
+
+    # Input validation
+    - name: validate-inputs
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "Validating schedule raw data exists for date range..."
+          echo "Start date: {{workflow.parameters.start-date}}"
+          echo "End date: {{workflow.parameters.end-date}}"
+
+          COUNT=$(PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -t -c "SELECT COUNT(*) FROM schedule.schedule WHERE schedule_date BETWEEN '{{workflow.parameters.start-date}}' AND '{{workflow.parameters.end-date}}';")
+
+          echo "Found $COUNT raw schedule records"
+
+          if [ "$COUNT" -eq "0" ]; then
+            echo "WARNING: No raw data found for this date range"
+            echo "Pipeline will continue but may produce no output"
+          fi
+
+          echo "✓ Validation passed"
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+    # Spark transformation job
+    - name: spark-transform-job
+      resource:
+        action: create
+        successCondition: status.applicationState.state == COMPLETED
+        failureCondition: status.applicationState.state == FAILED
+        manifest: |
+          apiVersion: sparkoperator.k8s.io/v1beta2
+          kind: SparkApplication
+          metadata:
+            name: schedule-transform-{{workflow.uid}}
+            namespace: mlb-data-platform
+          spec:
+            type: Python
+            mode: cluster
+            image: mlb-data-platform/spark:latest
+            imagePullPolicy: Never
+            mainApplicationFile: local:///app/examples/spark_jobs/transform_schedule.py
+
+            sparkVersion: "3.5.0"
+            restartPolicy:
+              type: Never
+
+            driver:
+              cores: 1
+              coreLimit: "1200m"
+              memory: "{{workflow.parameters.spark-driver-memory}}"
+              labels:
+                version: "3.5.0"
+                app: mlb-data-platform
+              serviceAccount: mlb-data-platform-sa
+              env:
+                - name: START_DATE
+                  value: "{{workflow.parameters.start-date}}"
+                - name: END_DATE
+                  value: "{{workflow.parameters.end-date}}"
+                - name: SPORT_IDS
+                  value: "{{workflow.parameters.sport-ids}}"
+                - name: EXPORT_TO_DELTA
+                  value: "{{workflow.parameters.export-to-delta}}"
+                - name: DELTA_PATH
+                  value: "{{workflow.parameters.delta-path}}"
+                - name: POSTGRES_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: host
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: username
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: password
+
+            executor:
+              cores: 1
+              instances: 3
+              memory: "{{workflow.parameters.spark-executor-memory}}"
+              labels:
+                version: "3.5.0"
+                app: mlb-data-platform
+
+    # Output validation
+    - name: validate-outputs
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          set -e
+
+          echo "Validating transformed schedule data..."
+
+          # Check metadata table
+          METADATA_COUNT=$(PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -t -c "SELECT COUNT(*) FROM schedule.schedule_metadata;")
+
+          echo "Found $METADATA_COUNT schedule metadata records"
+
+          # Check games table
+          GAMES_COUNT=$(PGPASSWORD=$POSTGRES_PASSWORD psql \
+            -h $POSTGRES_HOST \
+            -U $POSTGRES_USER \
+            -d $POSTGRES_DB \
+            -t -c "SELECT COUNT(*) FROM schedule.games WHERE game_date BETWEEN '{{workflow.parameters.start-date}}' AND '{{workflow.parameters.end-date}}';")
+
+          echo "Found $GAMES_COUNT game records"
+
+          if [ "$GAMES_COUNT" -eq "0" ]; then
+            echo "WARNING: No games extracted (may be off-season)"
+          fi
+
+          echo "✓ Output validation passed"
+        env:
+          - name: POSTGRES_HOST
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: host
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: password
+          - name: POSTGRES_DB
+            value: mlb_games
+
+  # Retry failed steps up to 2 times
+  retryStrategy:
+    limit: 2
+    retryPolicy: "Always"
+    backoff:
+      duration: "1m"
+      factor: 2
+      maxDuration: "10m"

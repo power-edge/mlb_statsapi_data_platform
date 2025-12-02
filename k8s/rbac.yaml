@@ -1,0 +1,76 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlb-data-platform-sa
+  namespace: mlb-data-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mlb-data-platform-role
+  namespace: mlb-data-platform
+rules:
+  # Pods
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  # ConfigMaps and Secrets
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  # Spark Applications
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications", "scheduledsparkapplications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workflows
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows", "workflowtemplates", "cronworkflows"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mlb-data-platform-rb
+  namespace: mlb-data-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mlb-data-platform-role
+subjects:
+  - kind: ServiceAccount
+    name: mlb-data-platform-sa
+    namespace: mlb-data-platform
+---
+# ClusterRole for Spark driver to manage executors
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spark-driver-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-driver-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spark-driver-role
+subjects:
+  - kind: ServiceAccount
+    name: mlb-data-platform-sa
+    namespace: mlb-data-platform

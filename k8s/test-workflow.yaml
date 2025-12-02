@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: test-connectivity-
+  namespace: mlb-data-platform
+spec:
+  entrypoint: test-all
+  serviceAccountName: mlb-data-platform-sa
+
+  templates:
+    - name: test-all
+      steps:
+        - - name: test-postgres
+            template: test-postgres
+        - - name: test-redis
+            template: test-redis
+        - - name: test-minio
+            template: test-minio
+
+    - name: test-postgres
+      script:
+        image: postgres:15-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          echo "Testing PostgreSQL connection..."
+          PGPASSWORD=mlb_admin_password psql -h postgres -U mlb_admin -d mlb_games -c "SELECT version();"
+          echo "✓ PostgreSQL OK"
+
+          echo "Checking tables..."
+          PGPASSWORD=mlb_admin_password psql -h postgres -U mlb_admin -d mlb_games -c "\dt season.*;"
+          echo "✓ Tables exist"
+
+    - name: test-redis
+      script:
+        image: redis:7-alpine
+        command: [sh]
+        source: |
+          #!/bin/sh
+          echo "Testing Redis connection..."
+          redis-cli -h redis PING
+          echo "✓ Redis OK"
+
+    - name: test-minio
+      script:
+        image: minio/mc:latest
+        command: [sh]
+        source: |
+          #!/bin/sh
+          echo "Testing MinIO connection..."
+          mc alias set minio http://minio:9000 minioadmin minioadmin
+          mc mb minio/mlb-data || true
+          mc ls minio/
+          echo "✓ MinIO OK"

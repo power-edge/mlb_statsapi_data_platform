@@ -26,7 +26,7 @@ class FieldMetadata(BaseModel):
     is_partition_key: bool = False
     is_indexed: bool = False
     description: Optional[str] = None
-    json_path: Optional[str] = None  # JSONPath to extract from raw data
+    json_path: Optional[str] = None  # JSONPath to extract (can reference $.request_params.*)
     default_value: Optional[Any] = None
 
 

@@ -114,6 +114,20 @@ class MLBStatsAPIClient:
         # Extract response data
         response_data = response.json()
 
+        # Get URL from response metadata or construct it
+        url = response.get_metadata().get("url", "")
+        if not url:
+            # Construct URL from endpoint/method if not available from response
+            # This commonly happens in stub mode
+            base_url = "https://statsapi.mlb.com/api"
+            # Construct path based on endpoint/method
+            # Most endpoints follow pattern: /v1/{endpoint}/{method}
+            url = f"{base_url}/v1/{endpoint_name}/{method_name}"
+            if params:
+                # Add query params
+                param_str = "&".join(f"{k}={v}" for k, v in params.items())
+                url = f"{url}?{param_str}"
+
         # Build metadata
         metadata = {
             "request": {
@@ -121,7 +135,7 @@ class MLBStatsAPIClient:
                 "method_name": method_name,
                 "path_params": {},  # TODO: Extract from response metadata
                 "query_params": params,
-                "url": response.get_metadata().get("url", ""),
+                "url": url,
                 "timestamp": start_time.isoformat(),
             },
             "response": {

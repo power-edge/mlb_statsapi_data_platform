@@ -1,0 +1,89 @@
+# CronWorkflow for Schedule Polling
+# Polls schedule multiple times per day to catch changes (postponements, time updates)
+# MLB schedules can change throughout the day until games start
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: mlb-schedule-polling
+  namespace: mlb-data-platform
+  labels:
+    app: mlb-data-platform
+    component: pipeline
+    schedule: schedule-polling
+spec:
+  # Schedule: Every 2 hours from 10 AM to 10 PM ET (baseball operating hours)
+  # This catches schedule updates, postponements, doubleheaders, etc.
+  schedule: "0 14,16,18,20,22,0,2 * 3-11 *"  # UTC hours covering 10am-10pm ET
+  timezone: "UTC"
+
+  # Allow concurrent runs (quick operation)
+  concurrencyPolicy: "Allow"
+
+  # History retention
+  successfulJobsHistoryLimit: 14  # 1 week at ~2/day
+  failedJobsHistoryLimit: 5
+
+  suspend: false
+
+  workflowSpec:
+    entrypoint: schedule-poll
+
+    arguments:
+      parameters:
+        - name: sport-id
+          value: "1"
+
+    serviceAccountName: mlb-data-platform-sa
+
+    templates:
+      - name: schedule-poll
+        container:
+          image: mlb-data-platform/ingestion:latest
+          command: [uv, run, mlb-etl, ingest]
+          args:
+            - --endpoint
+            - schedule
+            - --method
+            - schedule
+            - --params
+            - "sportId={{workflow.parameters.sport-id}}"
+            - --save
+            - --db-host
+            - $(POSTGRES_HOST)
+            - --db-port
+            - "5432"
+            - --db-user
+            - $(POSTGRES_USER)
+            - --db-password
+            - $(POSTGRES_PASSWORD)
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+
+    # Quick timeout - schedule fetch is fast
+    activeDeadlineSeconds: 300  # 5 minutes max
+
+    ttlStrategy:
+      secondsAfterCompletion: 3600   # 1 hour
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 7200
