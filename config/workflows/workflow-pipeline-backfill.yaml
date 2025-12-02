@@ -85,13 +85,14 @@ spec:
     - name: run-backfill
       container:
         image: mlb-data-platform/ingestion:latest
+        imagePullPolicy: Never
         command: [sh, -c]
         args:
           - |
             set -e
 
             # Build command based on parameters
-            CMD="uv run mlb-etl pipeline backfill --save"
+            CMD="mlb-etl pipeline backfill --save"
             CMD="$CMD --db-host $POSTGRES_HOST"
             CMD="$CMD --db-port 5432"
             CMD="$CMD --db-name $POSTGRES_DB"

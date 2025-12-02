@@ -39,7 +39,8 @@ spec:
       - name: schedule-poll
         container:
           image: mlb-data-platform/ingestion:latest
-          command: [uv, run, mlb-etl, ingest]
+          imagePullPolicy: Never
+          command: [mlb-etl, ingest]
           args:
             - --endpoint
             - schedule
