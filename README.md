@@ -123,22 +123,22 @@ make cluster-start   # Start cluster again
 make cluster-delete  # Remove cluster entirely
 ```
 
-### Kubernetes Deployment
+### Kubernetes Deployment (Local k3s)
 
 ```bash
-# 1. Bootstrap Terraform (creates AWS S3 state backend + secrets)
-./scripts/bootstrap_terraform.sh
+# 1. Verify k3s cluster is running
+kubectl cluster-info
 
-# 2. Deploy to Kubernetes
-./scripts/deploy.sh dev  # or 'prod'
+# 2. Build and import ingestion image
+docker build -f docker/Dockerfile.ingestion -t mlb-data-platform/ingestion:latest .
+docker save mlb-data-platform/ingestion:latest | sudo k3s ctr images import -
 
-# 3. Access services
-kubectl port-forward svc/postgresql 5432:5432 -n mlb-data-platform
-kubectl port-forward svc/minio 9000:9000 -n mlb-data-platform
-kubectl port-forward svc/argo-server 2746:2746 -n mlb-data-platform
+# 3. Submit workflow
+argo submit config/workflows/workflow-pipeline-daily.yaml -n mlb-data-platform --watch
 
-# 4. Submit workflow
-argo submit workflows/season-daily-pipeline.yaml -n mlb-data-platform --watch
+# 4. Access Argo UI
+kubectl port-forward svc/argo-server 2746:2746 -n argo
+# Open http://localhost:2746
 ```
 
 ## 📊 Data Workflows
@@ -181,9 +181,8 @@ mlb_statsapi_data_platform/
 │   └── orchestration/            # Argo Workflows integration
 ├── config/
 │   ├── jobs/                     # Declarative job definitions (YAML)
-│   └── schemas/                  # Avro schemas + hierarchical mappings
-├── helm/mlb-data-platform/       # Helm chart with sub-charts
-├── terraform/                    # AWS state backend + secrets only
+│   ├── workflows/                # Argo Workflow definitions
+│   └── k8s/                      # Kubernetes manifests
 ├── sql/                          # PostgreSQL migrations + schemas
 ├── docker/                       # Dockerfiles (ingestion, PySpark)
 ├── scripts/                      # Helper scripts (deploy, setup)
@@ -320,7 +319,7 @@ helm package helm/mlb-data-platform/
 - Comprehensive error handling and retry logic
 - Observability: structured logging, metrics, traces
 - Multi-tenant support with PostgreSQL role templates
-- Secrets management via AWS Secrets Manager + External Secrets Operator
+- Kubernetes-native secrets management
 
 ### Testing Strategy
 - **Stub-based testing** using pymlb_statsapi captured responses

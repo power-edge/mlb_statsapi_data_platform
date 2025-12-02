@@ -11,7 +11,7 @@ Guidance for Claude Code (claude.ai/code) when working with this repository.
 **Design Philosophy**: Schema-driven, config-first, defensive upserts, idempotent pipelines
 
 ### Key Characteristics
-- **Kubernetes-first**: Designed to run entirely in K8s (no AWS services except state/secrets)
+- **Kubernetes-first**: Runs entirely on local k3s cluster (no cloud dependencies)
 - **Schema-driven**: Leverages `pymlb_statsapi` for schema-aware API interactions
 - **Two-tier architecture**: Raw JSONB layer + normalized relational layer
 - **Configuration over code**: Declarative job definitions in YAML
@@ -24,8 +24,7 @@ Guidance for Claude Code (claude.ai/code) when working with this repository.
 - **MinIO**: S3-compatible object storage (in-cluster)
 - **Redis 7+**: Caching layer for live game data
 - **Argo Workflows**: DAG-based orchestration
-- **Helm**: Kubernetes packaging and deployment
-- **Terraform**: AWS state backend + secrets management only
+- **k3s**: Lightweight Kubernetes for local development
 
 ---
 
@@ -64,27 +63,30 @@ docker compose exec postgres psql -U mlb_admin -d mlb_games \
 docker compose down
 ```
 
-### Kubernetes Deployment
+### Kubernetes Deployment (Local k3s)
 
 ```bash
-# 1. Bootstrap Terraform (creates AWS S3 state backend + secrets)
-./scripts/bootstrap_terraform.sh
+# 1. Verify k3s cluster is running
+kubectl cluster-info
 
-# 2. Deploy to K8s
-./scripts/deploy.sh dev          # or: prod
+# 2. Check deployed services
+kubectl get pods -n mlb-data-platform
+# Should show: postgres, redis, minio running
 
-# 3. Access services
-kubectl port-forward svc/postgresql 5432:5432 -n mlb-data-platform
-kubectl port-forward svc/minio 9000:9000 -n mlb-data-platform
-kubectl port-forward svc/argo-server 2746:2746 -n mlb-data-platform
+# 3. Build and import ingestion image
+docker build -f docker/Dockerfile.ingestion -t mlb-data-platform/ingestion:latest .
+docker save mlb-data-platform/ingestion:latest | sudo k3s ctr images import -
 
 # 4. Submit workflow
-argo submit helm/mlb-data-platform/templates/workflows/workflow-season-pipeline.yaml \
-  --namespace mlb-data-platform \
-  --watch
+argo submit config/workflows/workflow-pipeline-daily.yaml \
+  -n mlb-data-platform --watch
 
 # 5. View logs
-argo logs season-pipeline-xxxxx -n mlb-data-platform -f
+argo logs -n mlb-data-platform -f
+
+# 6. Access Argo UI (optional)
+kubectl port-forward svc/argo-server 2746:2746 -n argo
+# Open http://localhost:2746
 ```
 
 ---
@@ -286,37 +288,12 @@ mlb_statsapi_data_platform/
 │
 ├── docker/
 │   ├── Dockerfile.ingestion      # Lightweight Python image
-│   ├── Dockerfile.spark          # PySpark + dependencies
-│   └── Dockerfile.migration      # Migration runner
-│
-├── terraform/
-│   ├── main.tf
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── backend.tf                # S3 backend config
-│   │
-│   ├── modules/
-│   │   ├── s3-state-backend/     # Terraform state bucket
-│   │   ├── secrets-manager/      # AWS Secrets Manager
-│   │   └── iam/                  # IAM for External Secrets
-│   │
-│   └── environments/
-│       ├── dev/
-│       │   ├── main.tf
-│       │   ├── terraform.tfvars
-│       │   └── backend.hcl
-│       └── prod/
-│           ├── main.tf
-│           ├── terraform.tfvars
-│           └── backend.hcl
+│   └── Dockerfile.spark          # PySpark + dependencies
 │
 ├── scripts/
-│   ├── bootstrap_terraform.sh    # Bootstrap TF state backend
-│   ├── setup_github.sh           # Setup GitHub secrets/tokens
-│   ├── deploy.sh                 # Deploy to K8s
 │   ├── init_database.sh          # Initialize PostgreSQL
-│   ├── provision_customer.sh     # Create customer user
-│   └── test_pipeline.sh          # E2E pipeline test
+│   ├── repair_k3s.sh             # K3s cluster repair utility
+│   └── test_transform.sh         # Transform test runner
 │
 ├── docs/
 │   ├── architecture.md
@@ -456,41 +433,20 @@ When MLB adds a new API endpoint or you want to ingest a new endpoint:
 
 ## Deployment
 
-### AWS Setup (State & Secrets Only)
+### Local k3s Cluster
+
+The platform runs on a local single-node k3s cluster with:
+- **Namespace**: `mlb-data-platform` (PostgreSQL, Redis, MinIO)
+- **Namespace**: `argo` (Argo Workflows server + controller)
+- **Namespace**: `spark-operator` (Spark job execution)
 
 ```bash
-# 1. Bootstrap Terraform state backend
-./scripts/bootstrap_terraform.sh
+# Check cluster status
+kubectl cluster-info
+kubectl get pods -n mlb-data-platform
 
-# Creates:
-# - S3 bucket: power-edge-sports.terraform
-# - DynamoDB table: terraform-lock
-# - AWS Secrets Manager secrets:
-#   - mlb-data-platform/postgres
-#   - mlb-data-platform/redis
-#   - mlb-data-platform/minio
-
-# 2. Verify secrets
-aws secretsmanager list-secrets --query "SecretList[?starts_with(Name, 'mlb-data-platform')].Name"
-```
-
-### Kubernetes Deployment
-
-```bash
-# 1. Ensure kubeconfig is set
-export KUBECONFIG=~/.kube/config
-
-# 2. Deploy to dev environment
-./scripts/deploy.sh dev
-
-# 3. Monitor deployment
-kubectl get pods -n mlb-data-platform -w
-
-# 4. Check services
-kubectl get svc -n mlb-data-platform
-
-# 5. View logs
-kubectl logs -f deployment/mlb-ingestion -n mlb-data-platform
+# View Argo workflows
+argo list -n mlb-data-platform
 ```
 
 ### Accessing Services
