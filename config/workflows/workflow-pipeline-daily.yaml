@@ -59,7 +59,8 @@ spec:
           - name: date
       container:
         image: mlb-data-platform/ingestion:latest
-        command: [uv, run, mlb-etl, pipeline]
+        imagePullPolicy: Never
+        command: [mlb-etl, pipeline]
         args:
           - "{{inputs.parameters.action}}"
           - --save

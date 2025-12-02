@@ -11,21 +11,25 @@ RUN apt-get update && apt-get install -y \
 
 # Install uv for fast package management
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Set working directory
 WORKDIR /app
 
 # Copy project files
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY config/ ./config/
+
+# Set version for setuptools-scm (since .git is not copied)
+ARG VERSION=0.1.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=${VERSION}
 
 # Install Python dependencies
 RUN uv pip install --system -e .
 
 # Set environment variables
-ENV PYTHONPATH=/app/src:${PYTHONPATH}
+ENV PYTHONPATH=/app/src
 
 # Default command runs the CLI
 ENTRYPOINT ["mlb-etl"]
